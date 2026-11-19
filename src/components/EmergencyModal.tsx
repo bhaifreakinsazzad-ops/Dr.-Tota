@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { EMERGENCY_SCRIPT_BN } from '../utils/safetyEngine';
 import { copyTextToClipboard } from '../utils/alerts';
 import { stopSpeaking } from '../utils/speech';
@@ -24,8 +25,6 @@ const EmergencyModal: React.FC<EmergencyModalProps> = ({
     }
   }, [isOpen]);
 
-  if (!isOpen) return null;
-
   const reasonText =
     reason === 'manual'
       ? 'শনাক্তকৃত কারণ: সরাসরি জরুরি বোতাম চাপ হয়েছে'
@@ -47,61 +46,99 @@ const EmergencyModal: React.FC<EmergencyModalProps> = ({
   };
 
   return (
-    <div
-      className="modal-backdrop"
-      id="emergency-modal"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="emergency-modal-title"
-    >
-      <div className="modal-dialog">
-        <div className="brand-title-row" style={{ justifyContent: 'space-between' }}>
-          <h2 className="section-heading" id="emergency-modal-title" style={{ color: 'var(--error)', margin: 0 }}>
-            জরুরি চিকিৎসাসহায়তা প্রোটোকল (টিয়ার-০)
-          </h2>
-          <span className="chip" data-status="alert">
-            তাৎক্ষণিক পদক্ষেপ
-          </span>
-        </div>
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          className="modal-backdrop"
+          id="emergency-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="emergency-modal-title"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.18 }}
+        >
+          <motion.div
+            className="modal-dialog"
+            initial={{ opacity: 0, scale: 0.94, y: 16 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.96, y: 8 }}
+            transition={{ type: 'spring', stiffness: 360, damping: 28 }}
+          >
+            <div className="brand-title-row" style={{ justifyContent: 'space-between' }}>
+              <h2
+                className="section-heading"
+                id="emergency-modal-title"
+                style={{ color: 'var(--error)', margin: 0 }}
+              >
+                জরুরি চিকিৎসাসহায়তা প্রোটোকল (টিয়ার-০)
+              </h2>
+              <span className="status-text" data-status="alert">
+                তাৎক্ষণিক পদক্ষেপ
+              </span>
+            </div>
 
-        <div className="status-card" data-status="alert">
-          <p className="msg-body" style={{ fontWeight: 700, color: 'var(--on-surface)' }}>
-            {EMERGENCY_SCRIPT_BN}
-          </p>
-        </div>
+            <div className="status-card" data-status="alert">
+              <p className="msg-body" style={{ fontWeight: 700, color: 'var(--on-surface)' }}>
+                {EMERGENCY_SCRIPT_BN}
+              </p>
+            </div>
 
-        <p className="lede">{reasonText}</p>
+            <p className="lede">{reasonText}</p>
 
-        <div className="two-col-grid" style={{ gap: 'var(--space-sm)' }}>
-          <a href="tel:999" className="btn btn-emergency" style={{ textAlign: 'center' }}>
-            জাতীয় জরুরি সেবা: ৯৯৯
-          </a>
-          <a href="tel:16263" className="btn btn-primary" style={{ textAlign: 'center' }}>
-            স্বাস্থ্য বাতায়ন (২৪/৭ ডাক্তার): ১৬২৬৩
-          </a>
-        </div>
+            <div className="two-col-grid" style={{ gap: 'var(--space-sm)' }}>
+              <motion.a
+                whileTap={{ scale: 0.98 }}
+                href="tel:999"
+                className="btn btn-emergency"
+                style={{ textAlign: 'center' }}
+              >
+                জাতীয় জরুরি সেবা: ৯৯৯
+              </motion.a>
+              <motion.a
+                whileTap={{ scale: 0.98 }}
+                href="tel:16263"
+                className="btn btn-primary"
+                style={{ textAlign: 'center' }}
+              >
+                স্বাস্থ্য বাতায়ন (২৪/৭ ডাক্তার): ১৬২৬৩
+              </motion.a>
+            </div>
 
-        <div className="callout-info">
-          <strong>তাৎক্ষণিক নিরাপদ করণীয়:</strong>
-          <ul style={{ margin: 'var(--space-xs) 0 0 0', paddingLeft: 'var(--space-lg)' }}>
-            <li>সোজা হয়ে বসুন বা আধা-শোয়া অবস্থায় আরাম করে থাকুন (জোর করে হাঁটবেন না)।</li>
-            <li>একা থাকলে ঘরের দরজার ছিটকিনি খুলে রাখুন যাতে সাহায্য দ্রুত ঢুকতে পারে।</li>
-            <li>সম্ভব হলে পাশের বিশ্বস্ত কাউকে বা দায়িত্বপ্রাপ্ত পরিবারের সদস্যকে ডাকুন।</li>
-          </ul>
-        </div>
+            <div className="callout-info">
+              <strong>তাৎক্ষণিক নিরাপদ করণীয়:</strong>
+              <ul style={{ margin: 'var(--space-xs) 0 0 0', paddingLeft: 'var(--space-lg)' }}>
+                <li>সোজা হয়ে বসুন বা আধা-শোয়া অবস্থায় আরাম করে থাকুন (জোর করে হাঁটবেন না)।</li>
+                <li>একা থাকলে ঘরের দরজার ছিটকিনি খুলে রাখুন যাতে সাহায্য দ্রুত ঢুকতে পারে।</li>
+                <li>সম্ভব হলে পাশের বিশ্বস্ত কাউকে বা দায়িত্বপ্রাপ্ত পরিবারের সদস্যকে ডাকুন।</li>
+              </ul>
+            </div>
 
-        <div className="header-actions" style={{ justifyContent: 'space-between' }}>
-          <button type="button" className="btn btn-outline" onClick={handleCopyDispatch}>
-            জরুরি বার্তা কপি করে পরিবারকে পাঠান
-          </button>
-          <button type="button" className="btn btn-soft" onClick={handleClose}>
-            আমি নিরাপদ আছি / বন্ধ করুন
-          </button>
-        </div>
+            <div className="header-actions" style={{ justifyContent: 'space-between' }}>
+              <motion.button
+                whileTap={{ scale: 0.97 }}
+                type="button"
+                className="btn btn-outline"
+                onClick={handleCopyDispatch}
+              >
+                জরুরি বার্তা কপি করে পরিবারকে পাঠান
+              </motion.button>
+              <motion.button
+                whileTap={{ scale: 0.97 }}
+                type="button"
+                className="btn btn-soft"
+                onClick={handleClose}
+              >
+                আমি নিরাপদ আছি / বন্ধ করুন
+              </motion.button>
+            </div>
 
-        {copyFeedback && <span className="inline-feedback">{copyFeedback}</span>}
-      </div>
-    </div>
+            {copyFeedback && <span className="inline-feedback">{copyFeedback}</span>}
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 };
 

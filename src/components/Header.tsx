@@ -1,14 +1,22 @@
 import React, { useState, useEffect } from 'react';
-import { Info, Shield, Phone, WifiOff } from 'lucide-react';
+import { Shield, Phone, WifiOff, Stethoscope } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
 
 interface HeaderProps {
   purdahMode: boolean;
   syncStatus: string;
+  motherLabel: string;
   onTogglePurdah: () => void;
   onEmergency: () => void;
 }
 
-const Header: React.FC<HeaderProps> = ({ purdahMode, syncStatus, onTogglePurdah, onEmergency }) => {
+const Header: React.FC<HeaderProps> = ({
+  purdahMode,
+  syncStatus,
+  motherLabel,
+  onTogglePurdah,
+  onEmergency,
+}) => {
   const [isOnline, setIsOnline] = useState<boolean>(() =>
     typeof navigator !== 'undefined' ? navigator.onLine : true
   );
@@ -27,41 +35,41 @@ const Header: React.FC<HeaderProps> = ({ purdahMode, syncStatus, onTogglePurdah,
   }, []);
 
   return (
-    <header className="app-header">
+    <motion.header
+      className="app-header"
+      initial={{ opacity: 0, y: -8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+    >
       <div className="app-header-main">
-        <div className="brand-block">
-          <div className="brand-title-row">
-            <h1 className="brand-title">ডাঃ তোতা</h1>
-            <span className="disclaimer-pill" id="header-disclaimer">
-              <Info size={18} aria-hidden="true" />
-              ডক্টর টোটা একটি এআই স্বাস্থ্য সহায়ক, আসল ডাক্তার নন
-            </span>
+        {/* Zone 1: Brand Crest & Clean Clinical Metadata */}
+        <div className="flex items-center gap-3.5">
+          <div className="brand-mark-badge" aria-hidden="true">
+            <Stethoscope size={24} strokeWidth={2.2} />
           </div>
-          <p className="lede" id="header-subtitle">
-            আম্মুজির কাশি পর্যবেক্ষণ, ওষুধ যাচাই এবং পরিবার সমন্বয় সহায়ক
-          </p>
+          <div className="flex flex-col gap-0.5">
+            <div className="brand-title-row">
+              <h1 className="brand-title">ডাঃ তোতা</h1>
+              <span className="status-text" data-status="info">
+                · {motherLabel}-র এআই স্বাস্থ্য কনসোল
+              </span>
+            </div>
+            <div className="meta-line">
+              <span>এআই স্বাস্থ্য সহায়ক (আসল ডাক্তার নন)</span>
+              <span className="meta-sep" aria-hidden="true">·</span>
+              <span id="sync-status-pill" role="status" aria-live="polite">
+                {isOnline ? syncStatus : 'অফলাইন সেশন'}
+              </span>
+            </div>
+          </div>
         </div>
 
+        {/* Zone 2 & 3: Privacy Toggle + Primary Emergency CTA */}
         <div className="header-actions">
-          <span
-            className="sync-chip"
-            id="sync-status-pill"
-            role="status"
-            aria-live="polite"
-            data-offline={!isOnline ? 'true' : 'false'}
-          >
-            <span
-              className={`w-2 h-2 rounded-full inline-block ${
-                isOnline ? 'bg-[#2e7d4f]' : 'bg-[#b86e00] animate-pulse'
-              }`}
-              aria-hidden="true"
-            />
-            {isOnline ? syncStatus : 'অফলাইন সেশন'}
-          </span>
-
-          <button
+          <motion.button
             type="button"
-            className="btn btn-soft btn-sm"
+            whileTap={{ scale: 0.97 }}
+            className={`btn btn-sm ${purdahMode ? 'btn-primary' : 'btn-soft'}`}
             id="btn-purdah"
             onClick={onTogglePurdah}
             aria-pressed={purdahMode}
@@ -70,29 +78,40 @@ const Header: React.FC<HeaderProps> = ({ purdahMode, syncStatus, onTogglePurdah,
             <span id="purdah-btn-label">
               {purdahMode ? 'নিরিবিলি মোড: চালু' : 'নিরিবিলি মোড: বন্ধ'}
             </span>
-          </button>
+          </motion.button>
 
-          <button
+          <motion.button
             type="button"
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.97 }}
             className="btn btn-emergency"
             id="btn-emergency-top"
             onClick={onEmergency}
           >
             <Phone size={20} aria-hidden="true" />
             জরুরি: ৯৯৯ / ১৬২৬৩
-          </button>
+          </motion.button>
         </div>
       </div>
 
-      {!isOnline && (
-        <div className="offline-banner" role="status" aria-live="polite">
-          <WifiOff size={18} aria-hidden="true" className="shrink-0 text-[#b86e00]" />
-          <span>
-            আপনি এখন অফলাইনে আছেন — ইন্টারনেট না থাকায় ভয়েস সেবা (ভয়েস ইনপুট ও অডিও) সীমিত হতে পারে। স্থানীয় ডায়েরি ও তথ্য সংরক্ষণ চালু আছে।
-          </span>
-        </div>
-      )}
-    </header>
+      <AnimatePresence>
+        {!isOnline && (
+          <motion.div
+            className="offline-banner"
+            role="status"
+            aria-live="polite"
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+          >
+            <WifiOff size={18} aria-hidden="true" className="shrink-0 text-[#b86e00]" />
+            <span>
+              আপনি এখন অফলাইনে আছেন — ইন্টারনেট না থাকায় এআই বিশ্লেষণ সীমিত হতে পারে। স্থানীয় ডায়েরি ও জরুরি নিরাপত্তা চালু আছে।
+            </span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.header>
   );
 };
 

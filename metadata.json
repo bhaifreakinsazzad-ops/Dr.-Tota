@@ -1,0 +1,6 @@
+{
+  "name": "ডাঃ তোতা (DoctorTota) — আম্মুজির এআই স্বাস্থ্য সহায়ক ও পরিবার কনসোল",
+  "description": "বাংলা-প্রথম বয়স্ক-বান্ধব কাশি পর্যবেক্ষণ, প্রেসক্রিপশন স্ক্যানার, ওষুধ যাচাই এবং পরিবার সমন্বয় এআই সহায়ক",
+  "requestFramePermissions": ["microphone", "camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

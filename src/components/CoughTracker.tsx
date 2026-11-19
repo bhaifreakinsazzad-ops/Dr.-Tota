@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   ResponsiveContainer,
   LineChart,
@@ -10,18 +10,36 @@ import {
   CartesianGrid,
   Tooltip,
 } from 'recharts';
+import { Camera, Loader2, Activity, PlusCircle, CheckCircle2, ScanLine } from 'lucide-react';
+import { PredictiveArcCanvas, DiagnosticsPanel } from '@designcodeio/threeui';
+import { animate, stagger } from 'animejs';
+import { motion, AnimatePresence } from 'motion/react';
 import BreathRateTimer from './BreathRateTimer';
 import { BD_DRUG_SUGGESTIONS, lookupDrugMatch } from '../utils/drugDatabase';
+import { sendEmergencyTelegram } from '../utils/alerts';
 import {
   type DrTotaState,
   type CoughLog,
   type Medication,
+  type VitalsLog,
   formatNowBn,
+  getTodayDateKey,
 } from '../utils/storage';
 
 interface CoughTrackerProps {
   state: DrTotaState;
   onUpdateState: (updater: (prev: DrTotaState) => DrTotaState) => void;
+  onEmergency: (reason: string) => void;
+}
+
+interface ScannedMed {
+  brandName: string;
+  generic: string;
+  cls: string;
+  dose?: string;
+  prayerTime: string;
+  coughRisk: 'HIGH' | 'MODERATE' | 'LOW' | 'UNKNOWN';
+  note: string;
 }
 
 const DOMAIN_CHECKBOXES = [
@@ -52,8 +70,7 @@ const COUGH_TYPES = [
   'মিশ্র কাশি (রাতে বাড়ে)',
 ];
 
-const CoughTracker: React.FC<CoughTrackerProps> = ({ state, onUpdateState }) => {
-  // Cough Diary form state
+const CoughTracker: React.FC<CoughTrackerProps> = ({ state, onUpdateState, onEmergency }) => {
   const [coughWeeks, setCoughWeeks] = useState<number>(state.profile.coughWeeks || 0);
   const [coughType, setCoughType] = useState<string>(COUGH_TYPES[0]);
   const [severity, setSeverity] = useState<number>(4);
@@ -61,15 +78,63 @@ const CoughTracker: React.FC<CoughTrackerProps> = ({ state, onUpdateState }) => 
   const [coughNote, setCoughNote] = useState<string>('');
   const [coughFeedback, setCoughFeedback] = useState<string>('');
 
-  // Medication form state
+  const [systolic, setSystolic] = useState<string>('');
+  const [diastolic, setDiastolic] = useState<string>('');
+  const [spo2, setSpo2] = useState<string>('');
+  const [tempF, setTempF] = useState<string>('');
+  const [bloodSugar, setBloodSugar] = useState<string>('');
+  const [vitalsFeedback, setVitalsFeedback] = useState<string>('');
+
   const [medName, setMedName] = useState<string>('');
   const [medPrayer, setMedPrayer] = useState<string>(PRAYER_TIMES[0]);
   const [medDose, setMedDose] = useState<string>('');
   const [medFeedback, setMedFeedback] = useState<string>('');
 
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const kpiGridRef = useRef<HTMLDivElement>(null);
+  const scanBeamRef = useRef<HTMLDivElement>(null);
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanError, setScanError] = useState('');
+  const [scannedMeds, setScannedMeds] = useState<ScannedMed[]>([]);
+  const [scanDoctorNotes, setScanDoctorNotes] = useState('');
+  const [scanWarnings, setScanWarnings] = useState<string[]>([]);
+
   useEffect(() => {
     setCoughWeeks(Number(state.profile.coughWeeks) || 0);
   }, [state.profile.coughWeeks]);
+
+  // Anime.js v4 staggered KPI entrance
+  useEffect(() => {
+    const grid = kpiGridRef.current;
+    if (!grid) return;
+    const cards = grid.querySelectorAll('.kpi-anim-card');
+    if (cards.length === 0) return;
+    const anim = animate(cards, {
+      opacity: [0, 1],
+      translateY: [10, 0],
+      duration: 420,
+      delay: stagger(55),
+      ease: 'outCubic',
+    });
+    return () => {
+      anim.revert();
+    };
+  }, []);
+
+  // Anime.js v4 prescription scanning optical laser sweep
+  useEffect(() => {
+    if (!isScanning || !scanBeamRef.current) return;
+    const anim = animate(scanBeamRef.current, {
+      translateX: ['-10%', '110%'],
+      duration: 1100,
+      loop: true,
+      alternate: true,
+      ease: 'inOutSine',
+    });
+    return () => {
+      anim.revert();
+    };
+  }, [isScanning]);
 
   const toggleDomainCheck = (val: string) => {
     setSelectedDomains((prev) =>
@@ -142,6 +207,75 @@ const CoughTracker: React.FC<CoughTrackerProps> = ({ state, onUpdateState }) => 
     setCoughFeedback("নমুনা তথ্য ফর্মে লোড হয়েছে — সংরক্ষণ করতে 'ডায়েরিতে সংরক্ষণ করুন' চাপুন");
   };
 
+  const handleSaveVitals = () => {
+    const sysNum = systolic ? parseInt(systolic, 10) : undefined;
+    const diaNum = diastolic ? parseInt(diastolic, 10) : undefined;
+    const spo2Num = spo2 ? parseInt(spo2, 10) : undefined;
+    const tempNum = tempF ? parseFloat(tempF) : undefined;
+    const sugarNum = bloodSugar ? parseFloat(bloodSugar) : undefined;
+
+    if (!sysNum && !diaNum && !spo2Num && !tempNum && !sugarNum) {
+      setVitalsFeedback('অন্তত একটি ভাইটাল মান লিখুন');
+      return;
+    }
+
+    const newVital: VitalsLog = {
+      id: `vit_${Date.now()}`,
+      date: formatNowBn(),
+      timestamp: Date.now(),
+      systolic: sysNum,
+      diastolic: diaNum,
+      spo2: spo2Num,
+      tempF: tempNum,
+      bloodSugar: sugarNum,
+    };
+
+    const isCriticalHypoxia = spo2Num !== undefined && spo2Num < 92;
+    const isWarnVital =
+      (spo2Num !== undefined && spo2Num >= 92 && spo2Num <= 94) ||
+      (sysNum !== undefined && sysNum >= 160) ||
+      (tempNum !== undefined && tempNum >= 101);
+
+    const alertSummary = isCriticalHypoxia
+      ? `অক্সিজেন স্যাচুরেশন বিপজ্জনকভাবে কম (${spo2Num}%)`
+      : isWarnVital
+      ? `ভাইটাল সতর্কতা (BP: ${sysNum || '-'}/${diaNum || '-'}, SpO2: ${spo2Num || '-'}%, Temp: ${tempNum || '-'}°F)`
+      : null;
+
+    onUpdateState((prev) => ({
+      ...prev,
+      vitalsLogs: [newVital, ...prev.vitalsLogs],
+      alerts: alertSummary
+        ? [
+            {
+              id: `al_${Date.now()}`,
+              level: isCriticalHypoxia ? 'T0 জরুরি' : 'T1 ভাইটাল সতর্কতা',
+              reason: alertSummary,
+              quote: `SpO2: ${spo2Num || '-'}% | BP: ${sysNum || '-'}/${diaNum || '-'}`,
+              time: formatNowBn(),
+            },
+            ...prev.alerts,
+          ]
+        : prev.alerts,
+    }));
+
+    setSystolic('');
+    setDiastolic('');
+    setSpo2('');
+    setTempF('');
+    setBloodSugar('');
+
+    if (isCriticalHypoxia) {
+      setVitalsFeedback('সতর্কতা: SpO2 ৯২%-এর নিচে! জরুরি সহায়তা প্রটোকল খোলা হয়েছে।');
+      onEmergency(`অক্সিজেন (SpO2) ${spo2Num}% — জরুরি চিকিৎসা প্রয়োজন`);
+      sendEmergencyTelegram(state.profile, `কম অক্সিজেন (SpO2 ${spo2Num}%)`, `SpO2: ${spo2Num}%`);
+    } else if (isWarnVital) {
+      setVitalsFeedback('ভাইটালস সংরক্ষিত হয়েছে ও পরিবার সতর্কবার্তা তৈরি হয়েছে।');
+    } else {
+      setVitalsFeedback('ভাইটালস সফলভাবে সংরক্ষিত হয়েছে');
+    }
+  };
+
   const handleAddMedication = () => {
     const rawName = medName.trim();
     if (!rawName) {
@@ -186,6 +320,99 @@ const CoughTracker: React.FC<CoughTrackerProps> = ({ state, onUpdateState }) => 
     setMedFeedback('ওষুধ তালিকায় যোগ হয়েছে');
   };
 
+  const handlePrescriptionFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setScanError('');
+    setScannedMeds([]);
+    setScanDoctorNotes('');
+    setScanWarnings([]);
+    setIsScanning(true);
+
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => reject(new Error('ছবি পড়া যায়নি'));
+        reader.readAsDataURL(file);
+      });
+
+      const base64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+      const res = await fetch('/api/scan-prescription', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageBase64: base64,
+          mimeType: file.type || 'image/jpeg',
+        }),
+      });
+      const data = (await res.json()) as {
+        medications?: ScannedMed[];
+        doctorNotes?: string;
+        warnings?: string[];
+        error?: string;
+      };
+      if (!res.ok) {
+        throw new Error(data.error || 'প্রেসক্রিপশন স্ক্যান করা যায়নি।');
+      }
+      setScannedMeds(data.medications || []);
+      setScanDoctorNotes(data.doctorNotes || '');
+      setScanWarnings(data.warnings || []);
+    } catch (err) {
+      setScanError(err instanceof Error ? err.message : 'স্ক্যান করতে সমস্যা হয়েছে।');
+    } finally {
+      setIsScanning(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const handleImportScannedMeds = () => {
+    if (scannedMeds.length === 0) return;
+    const now = Date.now();
+    const newMeds: Medication[] = scannedMeds.map((sm, idx) => {
+      const matched = lookupDrugMatch(`${sm.brandName} ${sm.generic}`);
+      const risk = (['HIGH', 'MODERATE', 'LOW', 'UNKNOWN'].includes(sm.coughRisk)
+        ? sm.coughRisk
+        : matched?.coughRisk || 'UNKNOWN') as Medication['coughRisk'];
+      const validPrayer = PRAYER_TIMES.includes(sm.prayerTime) ? sm.prayerTime : PRAYER_TIMES[0];
+      return {
+        id: `med_${now}_${idx}`,
+        brandName: sm.brandName,
+        generic: sm.generic || matched?.generic || 'প্রেসক্রিপশন ওষুধ',
+        cls: sm.cls || matched?.cls || 'শনাক্তকৃত ওষুধ',
+        coughRisk: risk,
+        note: sm.note || matched?.note || 'প্রেসক্রিপশন স্ক্যান থেকে যুক্ত',
+        prayerTime: validPrayer,
+        dose: sm.dose || '',
+      };
+    });
+
+    const aceFound = newMeds.filter((m) => m.coughRisk === 'HIGH');
+
+    onUpdateState((prev) => ({
+      ...prev,
+      medications: [...prev.medications, ...newMeds],
+      alerts:
+        aceFound.length > 0
+          ? [
+              {
+                id: `al_${now}`,
+                level: 'T2 প্রেসক্রিপশন সতর্কতা',
+                reason: `স্ক্যান করা প্রেসক্রিপশনে ACE-Inhibitor পাওয়া গেছে: ${aceFound
+                  .map((a) => a.brandName)
+                  .join(', ')}`,
+                quote: 'Gemini Vision Prescription Scan',
+                time: formatNowBn(),
+              },
+              ...prev.alerts,
+            ]
+          : prev.alerts,
+    }));
+
+    setMedFeedback(`${newMeds.length} টি ওষুধ সফলভাবে তালিকায় যোগ হয়েছে`);
+    setScannedMeds([]);
+  };
+
   const handleRemoveMedication = (medId: string) => {
     onUpdateState((prev) => ({
       ...prev,
@@ -197,7 +424,7 @@ const CoughTracker: React.FC<CoughTrackerProps> = ({ state, onUpdateState }) => 
     (bpm: number, durationSeconds: number, rawBreaths: number) => {
       const now = Date.now();
       const tier: CoughLog['tier'] = bpm >= 25 ? 'T1' : bpm >= 21 || bpm < 12 ? 'T2' : 'T3';
-      const severity = bpm >= 25 ? 7 : bpm >= 21 || bpm < 12 ? 5 : 2;
+      const sev = bpm >= 25 ? 7 : bpm >= 21 || bpm < 12 ? 5 : 2;
       const domains = [`শ্বাস-প্রশ্বাসের হার (${bpm} বার/মিনিট)`];
       if (bpm >= 25) {
         domains.push('দ্রুত শ্বাস-প্রশ্বাস (শ্বাসনালী/সংক্রমণ যাচাই)');
@@ -212,7 +439,7 @@ const CoughTracker: React.FC<CoughTrackerProps> = ({ state, onUpdateState }) => 
             timestamp: now,
             weeks: Number(prev.profile.coughWeeks) || 0,
             type: 'শ্বাস-প্রশ্বাসের হার পরিমাপ',
-            severity,
+            severity: sev,
             breathRate: bpm,
             domains,
             note: `${durationSeconds} সেকেন্ডে ${rawBreaths} বার শ্বাস গণনা থেকে প্রতি মিনিটে ${bpm} বার রেকর্ড করা হয়েছে।`,
@@ -238,10 +465,10 @@ const CoughTracker: React.FC<CoughTrackerProps> = ({ state, onUpdateState }) => 
     [onUpdateState]
   );
 
-  // Derived KPIs & 6-domain analysis
   const profileWeeks = Number(state.profile.coughWeeks) || 0;
   const aceCount = state.medications.filter((m) => m.coughRisk === 'HIGH').length;
   const totalFlags = aceCount + state.alerts.length;
+  const todayTaken = (state.adherence[getTodayDateKey()] || []).length;
   const latestTier =
     state.alerts.length > 0 && state.alerts[0].level.includes('T0')
       ? 'টিয়ার-০ (জরুরি)'
@@ -371,14 +598,14 @@ const CoughTracker: React.FC<CoughTrackerProps> = ({ state, onUpdateState }) => 
   return (
     <section className="tab-panel" id="panel-tracker" aria-labelledby="tab-btn-tracker">
       {/* 4 KPI Status Cards */}
-      <div className="kpi-grid">
+      <div className="kpi-grid" ref={kpiGridRef}>
         <div
-          className="status-card"
+          className="status-card kpi-anim-card"
           id="kpi-card-duration"
           data-status={profileWeeks >= 2 ? 'warn' : 'info'}
         >
           <div className="kpi-label">কাশির মোট সময়কাল</div>
-          <div className="kpi-value" id="stat-duration">
+          <div className="kpi-value mono-num" id="stat-duration">
             {profileWeeks} সপ্তাহ
           </div>
           <div className="kpi-caption" id="stat-duration-note">
@@ -390,73 +617,93 @@ const CoughTracker: React.FC<CoughTrackerProps> = ({ state, onUpdateState }) => 
           </div>
         </div>
 
-        <div className="status-card" id="kpi-card-tier" data-status={tierKpiStatus}>
+        <div className="status-card kpi-anim-card" id="kpi-card-tier" data-status={tierKpiStatus}>
           <div className="kpi-label">সর্বশেষ মূল্যায়ন স্তর</div>
           <div className="kpi-value" id="stat-tier">
             {latestTier}
           </div>
-          <div className="kpi-caption">রোগ নির্ণয় নয় — কেবল সতর্কতা স্তর</div>
+          <div className="kpi-caption">রোগ নির্ণয় নয় · কেবল সতর্কতা স্তর</div>
         </div>
 
-        <div className="status-card" id="kpi-card-meds" data-status="info">
-          <div className="kpi-label">যাচাইকৃত ওষুধ</div>
-          <div className="kpi-value" id="stat-med-count">
-            {state.medications.length} টি
+        <div className="status-card kpi-anim-card" id="kpi-card-meds" data-status="info">
+          <div className="kpi-label">আজকের ওষুধ গ্রহণ</div>
+          <div className="kpi-value mono-num" id="stat-med-count">
+            {todayTaken}/{state.medications.length} টি
           </div>
           <div className="kpi-caption">নামাজের সময়ের সাথে যুক্ত তালিকা</div>
         </div>
 
         <div
-          className="status-card"
+          className="status-card kpi-anim-card"
           id="kpi-card-flags"
           data-status={totalFlags > 0 ? 'alert' : 'ok'}
         >
-          <div className="kpi-label">ওষুধ ও লক্ষণ সতর্কতা</div>
-          <div className="kpi-value" id="stat-flag-count">
-            {totalFlags} টি
+          <div className="kpi-label">সতর্কতা ও সর্বশেষ SpO2</div>
+          <div className="kpi-value mono-num" id="stat-flag-count">
+            {state.vitalsLogs[0]?.spo2 ? `${state.vitalsLogs[0].spo2}%` : `${totalFlags} টি`}
           </div>
-          <div className="kpi-caption">এসিই-ইনহিবিটর ও রেড-ফ্ল্যাগ নজরদারি</div>
+          <div className="kpi-caption">
+            {totalFlags} টি ফ্ল্যাগ · এসিই-ইনহিবিটর নজরদারি
+          </div>
         </div>
       </div>
 
       {/* Dynamic Bangladesh NTP TB >= 2 Week Banner */}
-      {profileWeeks >= 2 && (
-        <div className="status-card" id="ntp-tb-banner" data-status="warn">
-          <div className="brand-title-row" style={{ justifyContent: 'space-between' }}>
-            <strong className="subhead" style={{ margin: 0 }}>
-              বাংলাদেশ জাতীয় যক্ষ্মা নিয়ন্ত্রণ কর্মসূচি (এনটিপি) সতর্কতা: ২ সপ্তাহ বা তার বেশি কাশি
-            </strong>
-            <span className="chip" data-status="warn">
-              বিনামূল্যে পরীক্ষাযোগ্য
-            </span>
-          </div>
-          <p className="lede" style={{ marginTop: 'var(--space-xs)' }}>
-            ২ সপ্তাহ বা তার বেশি স্থায়ী কাশি—বিশেষত সন্ধ্যার জ্বর, রাতে ঘাম বা ওজন কমার সাথে থাকলে—সরকারি উপজেলা স্বাস্থ্য কমপ্লেক্স, জেলা হাসপাতাল বা ব্র্যাক ডটস (DOTS) কেন্দ্রে{' '}
-            <strong>বিনামূল্যে দুটি কফ পরীক্ষা (এএফবি / জিনএক্সপার্ট এমটিবি/রিফ)</strong> এবং একটি{' '}
-            <strong>বুকের এক্স-রে (CXR)</strong> করানো অত্যন্ত জরুরি।
-          </p>
-        </div>
-      )}
+      <AnimatePresence>
+        {profileWeeks >= 2 && (
+          <motion.div
+            className="status-card"
+            id="ntp-tb-banner"
+            data-status="warn"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+          >
+            <div className="brand-title-row" style={{ justifyContent: 'space-between' }}>
+              <strong className="subhead" style={{ margin: 0 }}>
+                বাংলাদেশ জাতীয় যক্ষ্মা নিয়ন্ত্রণ কর্মসূচি (এনটিপি) সতর্কতা: ২ সপ্তাহ বা তার বেশি কাশি
+              </strong>
+              <span className="status-text" data-status="warn">
+                বিনামূল্যে পরীক্ষাযোগ্য
+              </span>
+            </div>
+            <p className="lede" style={{ marginTop: 'var(--space-xs)' }}>
+              ২ সপ্তাহ বা তার বেশি স্থায়ী কাশি—বিশেষত সন্ধ্যার জ্বর, রাতে ঘাম বা ওজন কমার সাথে থাকলে—সরকারি উপজেলা স্বাস্থ্য কমপ্লেক্স, জেলা হাসপাতাল বা ব্র্যাক ডটস (DOTS) কেন্দ্রে{' '}
+              <strong>বিনামূল্যে দুটি কফ পরীক্ষা (এএফবি / জিনএক্সপার্ট এমটিবি/রিফ)</strong> এবং একটি{' '}
+              <strong>বুকের এক্স-রে (CXR)</strong> করানো অত্যন্ত জরুরি।
+            </p>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Dynamic ACE Inhibitor Medication Alert Banner */}
-      {hasAce && (
-        <div className="status-card" id="ace-alert-banner" data-status="alert">
-          <div className="brand-title-row" style={{ justifyContent: 'space-between' }}>
-            <strong className="subhead" style={{ margin: 0, color: 'var(--error)' }}>
-              ওষুধজনিত কাশির সতর্কতা: এসিই-ইনহিবিটর (ACE Inhibitor) শনাক্ত হয়েছে
-            </strong>
-            <span className="chip" data-status="alert">
-              ডাক্তারের সাথে ওষুধ পর্যালোচনা করুন
-            </span>
-          </div>
-          <p className="lede" style={{ marginTop: 'var(--space-xs)' }}>
-            তালিকায় থাকা রক্তচাপের ওষুধ (যেমন র‍্যামিপ্রিল/রিপ্রিল) কিছু রোগীর ক্ষেত্রে দীর্ঘস্থায়ী শুকনো, গলা সুড়সুড়ে কাশি তৈরি করে যা কাশির সিরাপে সারে না।{' '}
-            <strong>সাবধান:</strong> ডাক্তারের অনুমতি ছাড়া নিজে থেকে প্রেশারের ওষুধ বন্ধ করবেন না। চিকিৎসককে জিজ্ঞাসা করুন—এই কাশি কি প্রেশারের ওষুধের কারণে হচ্ছে এবং এআরবি (ARB) শ্রেণির বিকল্প ওষুধ দেওয়া যাবে কি না।
-          </p>
-        </div>
-      )}
+      <AnimatePresence>
+        {hasAce && (
+          <motion.div
+            className="status-card"
+            id="ace-alert-banner"
+            data-status="alert"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+          >
+            <div className="brand-title-row" style={{ justifyContent: 'space-between' }}>
+              <strong className="subhead" style={{ margin: 0, color: 'var(--error)' }}>
+                ওষুধজনিত কাশির সতর্কতা: এসিই-ইনহিবিটর (ACE Inhibitor) শনাক্ত হয়েছে
+              </strong>
+              <span className="status-text" data-status="alert">
+                ডাক্তারের সাথে পর্যালোচনা করুন
+              </span>
+            </div>
+            <p className="lede" style={{ marginTop: 'var(--space-xs)' }}>
+              তালিকায় থাকা রক্তচাপের ওষুধ (যেমন র‍্যামিপ্রিল/রিপ্রিল) কিছু রোগীর ক্ষেত্রে দীর্ঘস্থায়ী শুকনো, গলা সুড়সুড়ে কাশি তৈরি করে যা কাশির সিরাপে সারে না।{' '}
+              <strong>সাবধান:</strong> ডাক্তারের অনুমতি ছাড়া নিজে থেকে প্রেশারের ওষুধ বন্ধ করবেন না। চিকিৎসককে জিজ্ঞাসা করুন—এই কাশি কি প্রেশারের ওষুধের কারণে হচ্ছে এবং এআরবি (ARB) শ্রেণির বিকল্প ওষুধ দেওয়া যাবে কি না।
+            </p>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-      {/* Row 1: 6-Domain Cough Diary + 6-Domain Index & Trend Chart */}
+      {/* Row 1: 6-Domain Cough Diary + ThreeUI Predictive Arc 6-Domain Index & Charts */}
       <div className="two-col-grid">
         <div className="card">
           <h2 className="section-heading">৬-ডোমেইন দৈনিক কাশির ডায়েরি</h2>
@@ -474,7 +721,7 @@ const CoughTracker: React.FC<CoughTrackerProps> = ({ state, onUpdateState }) => 
                 min={0}
                 max={150}
                 step={0.5}
-                className="input-control"
+                className="input-control tabular-nums"
                 id="input-cough-weeks"
                 value={coughWeeks}
                 onChange={(e) => setCoughWeeks(parseFloat(e.target.value) || 0)}
@@ -526,7 +773,7 @@ const CoughTracker: React.FC<CoughTrackerProps> = ({ state, onUpdateState }) => 
                 min={0}
                 max={10}
                 step={1}
-                className="input-control"
+                className="input-control tabular-nums"
                 id="input-severity"
                 value={severity}
                 onChange={(e) => {
@@ -576,20 +823,22 @@ const CoughTracker: React.FC<CoughTrackerProps> = ({ state, onUpdateState }) => 
             style={{ marginTop: 'var(--space-md)', justifyContent: 'space-between' }}
           >
             <div className="header-actions">
-              <button
+              <motion.button
                 type="button"
+                whileTap={{ scale: 0.97 }}
                 className="btn btn-primary"
                 onClick={handleSaveManualCoughLog}
               >
                 ডায়েরিতে সংরক্ষণ করুন
-              </button>
-              <button
+              </motion.button>
+              <motion.button
                 type="button"
+                whileTap={{ scale: 0.97 }}
                 className="btn btn-outline btn-sm"
                 onClick={handleLoadSampleCoughCase}
               >
                 নমুনা তথ্য দিয়ে দেখুন
-              </button>
+              </motion.button>
             </div>
             <span className="inline-feedback" id="cough-log-feedback">
               {coughFeedback}
@@ -597,33 +846,60 @@ const CoughTracker: React.FC<CoughTrackerProps> = ({ state, onUpdateState }) => 
           </div>
         </div>
 
-        {/* Right Column: 6-Domain Overview & Trend Chart */}
+        {/* Right Column: ThreeUI Predictive Arc Differential Index + Trend Charts */}
         <div className="list-stack">
           <div className="card">
-            <h2 className="subhead">৬-ডোমেইন কাশির কারণ বিশ্লেষণ সূচক</h2>
-            <p className="lede" style={{ marginBottom: 'var(--space-md)' }}>
-              চিকিৎসকের পরীক্ষার সুবিধার্থে সংগৃহীত তথ্যের ভিত্তিতে সম্ভাব্য ৬টি ক্ষেত্রের বর্তমান অবস্থান:
-            </p>
+            {/* ThreeUI PredictiveArcCanvas Clinical Header */}
+            <div className="threeui-telemetry-frame" style={{ marginBottom: 'var(--space-md)', minHeight: '108px' }}>
+              <div
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  pointerEvents: 'none',
+                  opacity: 0.72,
+                }}
+                aria-hidden="true"
+              >
+                <PredictiveArcCanvas variant="predictive" mode="dark" hue={182} speed={0.9} />
+              </div>
+              <div className="threeui-telemetry-overlay">
+                <div className="brand-title-row" style={{ justifyContent: 'space-between' }}>
+                  <h2 className="subhead" style={{ margin: 0, color: '#e8f8fb' }}>
+                    ৬-ডোমেইন কাশির কারণ বিশ্লেষণ সূচক
+                  </h2>
+                  <span className="mono-num" style={{ fontSize: '0.76rem', color: '#7eeef9' }}>
+                    {sixDomains.filter((d) => d.active).length}/৬ সক্রিয় সংকেত
+                  </span>
+                </div>
+                <p style={{ margin: '0.35rem 0 0 0', fontSize: 'var(--label-size)', color: '#b4dce4' }}>
+                  চিকিৎসকের পরীক্ষার সুবিধার্থে সংগৃহীত তথ্যের ভিত্তিতে সম্ভাব্য ৬টি ক্ষেত্রের বর্তমান অবস্থান
+                </p>
+              </div>
+            </div>
+
             <div className="domain-grid" id="six-domain-grid">
-              {sixDomains.map((d) => (
-                <div
+              {sixDomains.map((d, idx) => (
+                <motion.div
                   key={d.title}
                   className="status-card"
                   data-status={d.active ? d.status : 'info'}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: idx * 0.03 }}
                 >
                   <div
                     className="brand-title-row"
                     style={{ justifyContent: 'space-between', marginBottom: 'var(--space-xs)' }}
                   >
                     <strong style={{ fontSize: 'var(--body-size)' }}>{d.title}</strong>
-                    <span className="chip" data-status={d.active ? d.status : 'info'}>
+                    <span className="status-text" data-status={d.active ? d.status : 'info'}>
                       {d.active ? 'চিহ্নিত' : 'নিরীক্ষণ'}
                     </span>
                   </div>
                   <div className="kpi-caption" style={{ margin: 0 }}>
                     {d.desc}
                   </div>
-                </div>
+                </motion.div>
               ))}
             </div>
           </div>
@@ -636,7 +912,7 @@ const CoughTracker: React.FC<CoughTrackerProps> = ({ state, onUpdateState }) => 
               <h2 className="subhead" style={{ margin: 0 }}>
                 গত ৭ দিনের দৈনিক কাশি ও লক্ষণ লগ
               </h2>
-              <span className="chip" data-status="info">
+              <span className="status-text tabular-nums" data-status="info">
                 মোট {weeklyLogTotal} টি লগ
               </span>
             </div>
@@ -722,17 +998,267 @@ const CoughTracker: React.FC<CoughTrackerProps> = ({ state, onUpdateState }) => 
         </div>
       </div>
 
-      {/* Breath Rate Timer (60-Second Manual Counter) */}
-      <BreathRateTimer onRecordBreathRate={handleRecordBreathRate} />
-
-      {/* Row 2: Verified Medication & Bangladesh Drug Screener + Timeline */}
+      {/* Vitals Logger + 60-Second Breath Rate Timer */}
       <div className="two-col-grid">
         <div className="card">
-          <h2 className="section-heading">যাচাইকৃত ওষুধ ও পার্শ্বপ্রতিক্রিয়া নিরীক্ষণ</h2>
+          <div className="flex items-center gap-2" style={{ marginBottom: 'var(--space-xs)' }}>
+            <Activity size={22} className="text-[#0b7a88]" aria-hidden="true" />
+            <h2 className="section-heading" style={{ margin: 0 }}>
+              রক্তচাপ, অক্সিজেন (SpO2) ও জ্বর লগার
+            </h2>
+          </div>
           <p className="lede" style={{ marginBottom: 'var(--space-md)' }}>
-            কেবল চিকিৎসকের ব্যবস্থাপত্রে থাকা আসল ওষুধের নাম লিখুন। ডাঃ তোতা বাংলাদেশের প্রচলিত ব্র্যান্ড ও জেনেরিক যাচাই করে কাশি সৃষ্টিকারী ওষুধ (যেমন এসিই-ইনহিবিটর) চিহ্নিত করবে।
+            পালস অক্সিমিটার বা প্রেশার মেশিন থেকে পাওয়া মান লিখুন। SpO2 ৯২%-এর নিচে গেলে সাথে সাথে জরুরি সতর্কতা চালু হবে।
           </p>
 
+          <div className="form-grid">
+            <div className="field-group">
+              <label className="field-label" htmlFor="vit-sys">সিস্টোলিক প্রেশার (উপরের)</label>
+              <input
+                type="number"
+                id="vit-sys"
+                className="input-control tabular-nums"
+                value={systolic}
+                onChange={(e) => setSystolic(e.target.value)}
+                placeholder="যেমন: 130"
+              />
+            </div>
+            <div className="field-group">
+              <label className="field-label" htmlFor="vit-dia">ডায়াস্টোলিক প্রেশার (নিচের)</label>
+              <input
+                type="number"
+                id="vit-dia"
+                className="input-control tabular-nums"
+                value={diastolic}
+                onChange={(e) => setDiastolic(e.target.value)}
+                placeholder="যেমন: 80"
+              />
+            </div>
+            <div className="field-group">
+              <label className="field-label" htmlFor="vit-spo2">অক্সিজেন SpO2 (%)</label>
+              <input
+                type="number"
+                id="vit-spo2"
+                className="input-control tabular-nums"
+                value={spo2}
+                onChange={(e) => setSpo2(e.target.value)}
+                placeholder="যেমন: 97"
+              />
+            </div>
+            <div className="field-group">
+              <label className="field-label" htmlFor="vit-temp">জ্বর / তাপমাত্রা (°F)</label>
+              <input
+                type="number"
+                step="0.1"
+                id="vit-temp"
+                className="input-control tabular-nums"
+                value={tempF}
+                onChange={(e) => setTempF(e.target.value)}
+                placeholder="যেমন: 98.6"
+              />
+            </div>
+            <div className="field-group">
+              <label className="field-label" htmlFor="vit-sugar">ব্লাড সুগার (mmol/L)</label>
+              <input
+                type="number"
+                step="0.1"
+                id="vit-sugar"
+                className="input-control tabular-nums"
+                value={bloodSugar}
+                onChange={(e) => setBloodSugar(e.target.value)}
+                placeholder="যেমন: 7.4"
+              />
+            </div>
+          </div>
+
+          <div
+            className="input-row-end"
+            style={{ marginTop: 'var(--space-md)', justifyContent: 'space-between' }}
+          >
+            <motion.button
+              type="button"
+              whileTap={{ scale: 0.97 }}
+              className="btn btn-primary"
+              onClick={handleSaveVitals}
+            >
+              ভাইটালস সংরক্ষণ করুন
+            </motion.button>
+            <span className="inline-feedback">{vitalsFeedback}</span>
+          </div>
+
+          {state.vitalsLogs.length > 0 && (
+            <div className="list-stack" style={{ marginTop: 'var(--space-md)', gap: '0.5rem' }}>
+              {state.vitalsLogs.slice(0, 4).map((v) => (
+                <div key={v.id} className="item-row" style={{ padding: '0.75rem 1rem' }}>
+                  <div className="mono-num" style={{ fontWeight: 700, fontSize: 'var(--label-size)' }}>
+                    {v.systolic || '-'}/{v.diastolic || '-'} mmHg · SpO2 {v.spo2 || '-'}% · {v.tempF || '-'}°F
+                    {v.bloodSugar ? ` · Sugar ${v.bloodSugar}` : ''}
+                  </div>
+                  <span className="kpi-caption" style={{ margin: 0 }}>{v.date}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <BreathRateTimer onRecordBreathRate={handleRecordBreathRate} />
+      </div>
+
+      {/* Row 2: ThreeUI DiagnosticsPanel Prescription Vision Scanner + Verified Medication + Timeline */}
+      <div className="two-col-grid">
+        <div className="card">
+          <h2 className="section-heading">প্রেসক্রিপশন স্ক্যানার ও ওষুধ যাচাই</h2>
+          <p className="lede" style={{ marginBottom: 'var(--space-md)' }}>
+            ডাক্তারের প্রেসক্রিপশন বা ওষুধের পাতার ছবি তুলুন—অথবা নিচে হাতে নাম লিখুন। এসিই-ইনহিবিটর জাতীয় কাশি সৃষ্টিকারী ওষুধ স্বয়ংক্রিয়ভাবে শনাক্ত হবে।
+          </p>
+
+          {/* AI Vision Prescription Upload with ThreeUI DiagnosticsPanel + Anime.js Scan Beam */}
+          <div
+            className="threeui-telemetry-frame"
+            style={{ marginBottom: 'var(--space-lg)', minHeight: '116px' }}
+          >
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                pointerEvents: 'none',
+                opacity: isScanning ? 0.85 : 0.48,
+              }}
+              aria-hidden="true"
+            >
+              <DiagnosticsPanel
+                variant="flow"
+                mode="dark"
+                hue={175}
+                speed={isScanning ? 2.1 : 0.65}
+                opacity={0.75}
+              />
+            </div>
+
+            {isScanning && (
+              <div
+                ref={scanBeamRef}
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  bottom: 0,
+                  width: '4px',
+                  background: 'linear-gradient(180deg, transparent, #38e2f4, transparent)',
+                  boxShadow: '0 0 18px 4px rgba(56, 226, 244, 0.55)',
+                  zIndex: 3,
+                  pointerEvents: 'none',
+                }}
+              />
+            )}
+
+            <div className="threeui-telemetry-overlay">
+              <div className="brand-title-row" style={{ justifyContent: 'space-between' }}>
+                <div>
+                  <div className="flex items-center gap-2" style={{ color: '#e8f8fb', fontWeight: 700 }}>
+                    <ScanLine size={18} className="text-[#38e2f4]" aria-hidden="true" />
+                    <span>ছবি তুলে ওষুধ চিনে নিন (অপটিক্যাল স্ক্যানার)</span>
+                  </div>
+                  <span style={{ fontSize: 'var(--label-size)', color: '#a8d5df', display: 'block', marginTop: '0.2rem' }}>
+                    বাংলাদেশি প্রেসক্রিপশন বা ওষুধের স্ট্রিপের স্পষ্ট ছবি আপলোড করুন
+                  </span>
+                </div>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  className="hidden"
+                  onChange={(e) => void handlePrescriptionFileChange(e)}
+                />
+                <motion.button
+                  type="button"
+                  whileTap={{ scale: 0.97 }}
+                  className="btn btn-primary btn-sm"
+                  disabled={isScanning}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  {isScanning ? (
+                    <>
+                      <Loader2 size={16} className="animate-spin" aria-hidden="true" />
+                      <span>স্ক্যান হচ্ছে…</span>
+                    </>
+                  ) : (
+                    <>
+                      <Camera size={16} aria-hidden="true" />
+                      <span>প্রেসক্রিপশন / ওষুধের ছবি দিন</span>
+                    </>
+                  )}
+                </motion.button>
+              </div>
+            </div>
+          </div>
+
+          {scanError && (
+            <div className="error-banner" style={{ marginBottom: 'var(--space-md)' }} role="alert">
+              {scanError}
+            </div>
+          )}
+
+          <AnimatePresence>
+            {scannedMeds.length > 0 && (
+              <motion.div
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                style={{ marginBottom: 'var(--space-lg)' }}
+              >
+                <div
+                  className="brand-title-row"
+                  style={{ justifyContent: 'space-between', marginBottom: 'var(--space-sm)' }}
+                >
+                  <strong>শনাক্তকৃত {scannedMeds.length} টি ওষুধ:</strong>
+                  <motion.button
+                    type="button"
+                    whileTap={{ scale: 0.97 }}
+                    className="btn btn-primary btn-sm"
+                    onClick={handleImportScannedMeds}
+                  >
+                    <CheckCircle2 size={16} aria-hidden="true" />
+                    <span>সব তালিকায় যোগ করুন</span>
+                  </motion.button>
+                </div>
+
+                <div className="list-stack" style={{ gap: '0.5rem' }}>
+                  {scannedMeds.map((sm, idx) => (
+                    <div key={idx} className="item-row" style={{ padding: '0.75rem' }}>
+                      <div style={{ flex: 1 }}>
+                        <div className="meta-line" style={{ color: 'var(--on-surface)', fontWeight: 700 }}>
+                          <span>{sm.brandName}</span>
+                          <span className="meta-sep" aria-hidden="true">·</span>
+                          <span>{sm.generic}</span>
+                          <span className="meta-sep" aria-hidden="true">·</span>
+                          <span className="status-text" data-status={sm.coughRisk === 'HIGH' ? 'alert' : 'ok'}>
+                            {sm.coughRisk === 'HIGH' ? 'উচ্চ কাশি ঝুঁকি (ACE-I)' : sm.cls}
+                          </span>
+                        </div>
+                        <div className="kpi-caption">
+                          {sm.prayerTime} {sm.dose ? `· ${sm.dose}` : ''} — {sm.note}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {scanDoctorNotes && (
+                  <p className="kpi-caption" style={{ marginTop: 'var(--space-sm)' }}>
+                    <strong>প্রেসক্রিপশন নোট:</strong> {scanDoctorNotes}
+                  </p>
+                )}
+                {scanWarnings.length > 0 && (
+                  <p className="status-text" data-status="warn" style={{ marginTop: 'var(--space-xs)' }}>
+                    {scanWarnings.join(' · ')}
+                  </p>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Manual Medication Entry */}
           <div className="form-grid">
             <div className="field-group">
               <label className="field-label" htmlFor="input-med-name">
@@ -791,9 +1317,15 @@ const CoughTracker: React.FC<CoughTrackerProps> = ({ state, onUpdateState }) => 
             className="input-row-end"
             style={{ marginTop: 'var(--space-md)', justifyContent: 'space-between' }}
           >
-            <button type="button" className="btn btn-primary" onClick={handleAddMedication}>
-              ওষুধ যাচাই ও যোগ করুন
-            </button>
+            <motion.button
+              type="button"
+              whileTap={{ scale: 0.97 }}
+              className="btn btn-primary"
+              onClick={handleAddMedication}
+            >
+              <PlusCircle size={18} aria-hidden="true" />
+              <span>ওষুধ যাচাই ও যোগ করুন</span>
+            </motion.button>
             <span className="inline-feedback" id="med-feedback">
               {medFeedback}
             </span>
@@ -804,7 +1336,7 @@ const CoughTracker: React.FC<CoughTrackerProps> = ({ state, onUpdateState }) => 
               <div className="empty-state">
                 <strong>এখনো কোনো যাচাইকৃত ওষুধ যোগ করা হয়নি</strong>
                 <span>
-                  উপরে আম্মুজির প্রেসক্রিপশনের আসল ওষুধের নাম লিখুন (যেমন: প্রেশার, ডায়াবেটিস বা গ্যাস্ট্রিকের ট্যাবলেট)।
+                  উপরে প্রেসক্রিপশনের ছবি তুলুন অথবা আসল ওষুধের নাম লিখুন।
                 </span>
               </div>
             ) : (
@@ -829,20 +1361,20 @@ const CoughTracker: React.FC<CoughTrackerProps> = ({ state, onUpdateState }) => 
                       style={{ flex: 1 }}
                     >
                       <div
-                        className="brand-title-row"
-                        style={{ marginBottom: 'var(--space-xs)' }}
+                        className="meta-line"
+                        style={{ color: 'var(--on-surface)', fontWeight: 700, marginBottom: 'var(--space-xs)' }}
                       >
-                        <strong>{med.brandName}</strong>
-                        <span className="chip" data-status="info">
-                          {med.prayerTime}
-                        </span>
-                        <span className="chip" data-status={badgeStatus}>
+                        <span style={{ fontSize: 'var(--subhead-size)' }}>{med.brandName}</span>
+                        <span className="meta-sep" aria-hidden="true">·</span>
+                        <span>{med.prayerTime}</span>
+                        <span className="meta-sep" aria-hidden="true">·</span>
+                        <span className="status-text" data-status={badgeStatus}>
                           {riskLabel}
                         </span>
                       </div>
                       <div className="kpi-caption">
                         <strong>জেনেরিক ও শ্রেণি:</strong> {med.generic} ({med.cls})
-                        {med.dose ? ` • মাত্রা: ${med.dose}` : ''}
+                        {med.dose ? ` · মাত্রা: ${med.dose}` : ''}
                       </div>
                       <p
                         className="lede"
@@ -888,18 +1420,20 @@ const CoughTracker: React.FC<CoughTrackerProps> = ({ state, onUpdateState }) => 
                   }
                 >
                   <div className="brand-title-row" style={{ justifyContent: 'space-between' }}>
-                    <strong>
+                    <strong className="tabular-nums">
                       {log.breathRate !== undefined
                         ? `${log.type} — ${log.breathRate} বার/মিনিট`
                         : `${log.type} — তীব্রতা ${log.severity}/১০`}
                     </strong>
-                    <span className="chip" data-status={log.tier === 'T1' ? 'alert' : 'info'}>
-                      {log.tier} • {log.date}
+                    <span className="meta-line tabular-nums">
+                      <span>{log.tier}</span>
+                      <span className="meta-sep" aria-hidden="true">·</span>
+                      <span>{log.date}</span>
                     </span>
                   </div>
                   <div className="kpi-caption">
                     {log.domains.length > 0
-                      ? `ডোমেইন: ${log.domains.join(', ')}`
+                      ? `ডোমেইন: ${log.domains.join(' · ')}`
                       : 'সাধারণ পর্যবেক্ষণ'}
                   </div>
                   <p

@@ -1,18 +1,21 @@
-// Web Speech API Utilities for Dr. Tota (with 500ms trailing silence buffer)
+// Speech & Audio Utilities for Dr. Tota
+// Combines Gemini AI Bangla TTS + Web Speech fallback, and Web Speech STT + universal MediaRecorder AI transcription
 
 export interface SpeakCallbacks {
   onStart?: () => void;
   onEnd?: () => void;
 }
 
-export function speakText(
+let activeAudio: HTMLAudioElement | null = null;
+let activeSpeakRequestId = 0;
+
+function speakWithBrowserSynthesis(
   text: string,
-  rate: number = 0.88,
-  purdahMode: boolean = false,
-  forceEmergency: boolean = false,
+  rate: number,
+  forceEmergency: boolean,
   callbacks?: SpeakCallbacks
 ): void {
-  if ((purdahMode && !forceEmergency) || typeof window === 'undefined' || !('speechSynthesis' in window)) {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
     callbacks?.onEnd?.();
     return;
   }
@@ -42,7 +45,73 @@ export function speakText(
   window.speechSynthesis.speak(utterance);
 }
 
+export async function speakText(
+  text: string,
+  rate: number = 0.88,
+  purdahMode: boolean = false,
+  forceEmergency: boolean = false,
+  callbacks?: SpeakCallbacks,
+  useAiVoice: boolean = true
+): Promise<void> {
+  if ((purdahMode && !forceEmergency) || typeof window === 'undefined') {
+    callbacks?.onEnd?.();
+    return;
+  }
+
+  stopSpeaking();
+  const requestId = ++activeSpeakRequestId;
+
+  const online = typeof navigator !== 'undefined' ? navigator.onLine : true;
+  if (useAiVoice && online) {
+    try {
+      callbacks?.onStart?.();
+      const res = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, urgent: forceEmergency }),
+      });
+
+      if (requestId !== activeSpeakRequestId) return;
+
+      if (res.ok) {
+        const data = (await res.json()) as { audioBase64?: string; mimeType?: string };
+        if (data.audioBase64) {
+          const audio = new Audio(`data:${data.mimeType || 'audio/wav'};base64,${data.audioBase64}`);
+          audio.playbackRate = forceEmergency ? 0.95 : Math.max(0.75, Math.min(1.2, rate || 0.88));
+          activeAudio = audio;
+          audio.onended = () => {
+            if (activeAudio === audio) activeAudio = null;
+            callbacks?.onEnd?.();
+          };
+          audio.onerror = () => {
+            if (activeAudio === audio) activeAudio = null;
+            speakWithBrowserSynthesis(text, rate, forceEmergency, callbacks);
+          };
+          await audio.play();
+          return;
+        }
+      }
+    } catch {
+      if (requestId !== activeSpeakRequestId) return;
+      // Fall through cleanly to browser Web Speech synthesis
+    }
+  }
+
+  if (requestId !== activeSpeakRequestId) return;
+  speakWithBrowserSynthesis(text, rate, forceEmergency, callbacks);
+}
+
 export function stopSpeaking(): void {
+  activeSpeakRequestId++;
+  if (activeAudio) {
+    try {
+      activeAudio.pause();
+      activeAudio.currentTime = 0;
+    } catch {
+      // ignore
+    }
+    activeAudio = null;
+  }
   if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
     window.speechSynthesis.cancel();
   }
@@ -81,7 +150,7 @@ export class SpeechRecognizer {
 
   start(callbacks: SpeechRecognitionCallbacks): void {
     if (!this.recognition) {
-      callbacks.onError('এই ব্রাউজারে সরাসরি মাইক্রোফোন সমর্থিত নয় — নিচের দ্রুত বোতাম বা লেখার বক্স ব্যবহার করুন।');
+      callbacks.onError('এই ব্রাউজারে সরাসরি মাইক্রোফোন সমর্থিত নয় — এআই ভয়েস রেকর্ড বোতাম বা লেখার বক্স ব্যবহার করুন।');
       return;
     }
 
@@ -114,7 +183,7 @@ export class SpeechRecognizer {
         if (this.finalBuffer.trim().length > 0 && this.isListening) {
           this.stop(true, callbacks);
         }
-      }, 500);
+      }, 650);
     };
 
     this.recognition.onerror = () => {
@@ -162,5 +231,75 @@ export class SpeechRecognizer {
       clearTimeout(this.silenceTimer);
       this.silenceTimer = null;
     }
+  }
+}
+
+export class UniversalAudioRecorder {
+  private mediaRecorder: MediaRecorder | null = null;
+  private chunks: Blob[] = [];
+  private stream: MediaStream | null = null;
+
+  async start(): Promise<void> {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      throw new Error('এই ব্রাউজারে অডিও রেকর্ডিং সমর্থিত নয়।');
+    }
+    stopSpeaking();
+    this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const preferredMime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : MediaRecorder.isTypeSupported('audio/webm')
+      ? 'audio/webm'
+      : 'audio/mp4';
+    this.chunks = [];
+    this.mediaRecorder = new MediaRecorder(this.stream, { mimeType: preferredMime });
+    this.mediaRecorder.ondataavailable = (ev) => {
+      if (ev.data && ev.data.size > 0) {
+        this.chunks.push(ev.data);
+      }
+    };
+    this.mediaRecorder.start(250);
+  }
+
+  async stopAndEncode(): Promise<{ audioBase64: string; mimeType: string }> {
+    return new Promise((resolve, reject) => {
+      if (!this.mediaRecorder) {
+        reject(new Error('রেকর্ডিং চালু ছিল না।'));
+        return;
+      }
+      const recorder = this.mediaRecorder;
+      const mimeType = (recorder.mimeType || 'audio/webm').split(';')[0];
+
+      recorder.onstop = async () => {
+        try {
+          const blob = new Blob(this.chunks, { type: mimeType });
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const dataUrl = String(reader.result || '');
+            const base64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+            this.cleanup();
+            resolve({ audioBase64: base64, mimeType });
+          };
+          reader.onerror = () => {
+            this.cleanup();
+            reject(new Error('অডিও ফাইল প্রক্রিয়াকরণে সমস্যা হয়েছে।'));
+          };
+          reader.readAsDataURL(blob);
+        } catch (err) {
+          this.cleanup();
+          reject(err);
+        }
+      };
+
+      recorder.stop();
+    });
+  }
+
+  cleanup(): void {
+    if (this.stream) {
+      this.stream.getTracks().forEach((t) => t.stop());
+      this.stream = null;
+    }
+    this.mediaRecorder = null;
+    this.chunks = [];
   }
 }

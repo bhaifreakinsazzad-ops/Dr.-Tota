@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Mic, CheckSquare, Users } from 'lucide-react';
+import { LayoutGroup, motion, AnimatePresence } from 'motion/react';
 import Header from './components/Header';
 import VoiceChat from './components/VoiceChat';
 import CoughTracker from './components/CoughTracker';
@@ -17,6 +18,22 @@ import {
 import { stopSpeaking } from './utils/speech';
 
 type TabId = 'voice' | 'tracker' | 'settings';
+
+const NAV_TABS: { id: TabId; domId: string; label: string; icon: React.ReactNode }[] = [
+  { id: 'voice', domId: 'tab-btn-voice', label: 'কথা বলুন (আম্মুজি)', icon: <Mic size={20} aria-hidden="true" /> },
+  {
+    id: 'tracker',
+    domId: 'tab-btn-tracker',
+    label: 'কাশি, ভাইটালস ও ওষুধ',
+    icon: <CheckSquare size={20} aria-hidden="true" />,
+  },
+  {
+    id: 'settings',
+    domId: 'tab-btn-settings',
+    label: 'ডাক্তার ব্রিফ ও পরিবার',
+    icon: <Users size={20} aria-hidden="true" />,
+  },
+];
 
 const App: React.FC = () => {
   const [state, setState] = useState<DrTotaState>(() => loadAppState());
@@ -94,66 +111,90 @@ const App: React.FC = () => {
         <Header
           purdahMode={state.settings.purdahMode}
           syncStatus={syncStatus}
+          motherLabel={motherLabel}
           onTogglePurdah={handleTogglePurdah}
           onEmergency={() => handleOpenEmergency('manual')}
         />
 
-        {/* Two-Sided Interface Mode Switcher */}
-        <nav className="mode-nav" aria-label="প্রধান বিভাগসমূহ">
-          <button
-            type="button"
-            className="mode-tab"
-            id="tab-btn-voice"
-            aria-selected={activeTab === 'voice'}
-            onClick={() => setActiveTab('voice')}
-          >
-            <Mic size={20} aria-hidden="true" />
-            কথা বলুন (আম্মুজি)
-          </button>
+        {/* Two-Sided Interface Mode Switcher with Motion.dev Shared Spring Pill */}
+        <LayoutGroup id="dr-tota-mode-nav">
+          <nav className="mode-nav" aria-label="প্রধান বিভাগসমূহ">
+            {NAV_TABS.map((tab) => {
+              const selected = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  className="mode-tab"
+                  id={tab.domId}
+                  aria-selected={selected}
+                  onClick={() => setActiveTab(tab.id)}
+                >
+                  {selected && (
+                    <motion.span
+                      layoutId="active-mode-pill"
+                      className="mode-tab-pill"
+                      transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+                    />
+                  )}
+                  {tab.icon}
+                  <span>{tab.label}</span>
+                </button>
+              );
+            })}
+          </nav>
+        </LayoutGroup>
 
-          <button
-            type="button"
-            className="mode-tab"
-            id="tab-btn-tracker"
-            aria-selected={activeTab === 'tracker'}
-            onClick={() => setActiveTab('tracker')}
-          >
-            <CheckSquare size={20} aria-hidden="true" />
-            কাশি ও ওষুধ
-          </button>
+        <AnimatePresence mode="wait">
+          {activeTab === 'voice' && (
+            <motion.div
+              key="tab-voice"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+            >
+              <VoiceChat
+                state={state}
+                onUpdateState={handleUpdateState}
+                onEmergency={handleOpenEmergency}
+                onCompleteErasure={handleCompleteErasure}
+              />
+            </motion.div>
+          )}
 
-          <button
-            type="button"
-            className="mode-tab"
-            id="tab-btn-settings"
-            aria-selected={activeTab === 'settings'}
-            onClick={() => setActiveTab('settings')}
-          >
-            <Users size={20} aria-hidden="true" />
-            পরিবার ও সেটিংস
-          </button>
-        </nav>
+          {activeTab === 'tracker' && (
+            <motion.div
+              key="tab-tracker"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+            >
+              <CoughTracker
+                state={state}
+                onUpdateState={handleUpdateState}
+                onEmergency={handleOpenEmergency}
+              />
+            </motion.div>
+          )}
 
-        {activeTab === 'voice' && (
-          <VoiceChat
-            state={state}
-            onUpdateState={handleUpdateState}
-            onEmergency={handleOpenEmergency}
-            onCompleteErasure={handleCompleteErasure}
-          />
-        )}
-
-        {activeTab === 'tracker' && (
-          <CoughTracker state={state} onUpdateState={handleUpdateState} />
-        )}
-
-        {activeTab === 'settings' && (
-          <Settings
-            state={state}
-            onUpdateState={handleUpdateState}
-            onCompleteErasure={handleCompleteErasure}
-          />
-        )}
+          {activeTab === 'settings' && (
+            <motion.div
+              key="tab-settings"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+            >
+              <Settings
+                state={state}
+                onUpdateState={handleUpdateState}
+                onCompleteErasure={handleCompleteErasure}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       <EmergencyModal

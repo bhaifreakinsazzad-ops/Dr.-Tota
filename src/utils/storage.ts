@@ -15,6 +15,7 @@ export interface AppSettings {
   highContrast: boolean;
   ttsRate: number;
   purdahMode: boolean;
+  useAiVoice: boolean;
 }
 
 export interface CoughLog {
@@ -28,6 +29,18 @@ export interface CoughLog {
   domains: string[];
   note: string;
   tier: 'T0' | 'T1' | 'T2' | 'T3';
+}
+
+export interface VitalsLog {
+  id: string;
+  date: string;
+  timestamp: number;
+  systolic?: number;
+  diastolic?: number;
+  spo2?: number;
+  tempF?: number;
+  bloodSugar?: number;
+  note?: string;
 }
 
 export interface Medication {
@@ -56,6 +69,8 @@ export interface ChatMessage {
   text: string;
   simpleText?: string;
   simplified?: boolean;
+  domains?: string[];
+  suggestedChips?: string[];
   timestamp: string;
 }
 
@@ -63,9 +78,12 @@ export interface DrTotaState {
   profile: PatientProfile;
   settings: AppSettings;
   coughLogs: CoughLog[];
+  vitalsLogs: VitalsLog[];
   medications: Medication[];
+  adherence: Record<string, string[]>;
   alerts: CaregiverAlert[];
   messages: ChatMessage[];
+  doctorBrief: string;
 }
 
 const STORAGE_KEY = 'dr_tota_vitals_state_v2';
@@ -87,12 +105,23 @@ export const DEFAULT_STATE: DrTotaState = {
     highContrast: false,
     ttsRate: 0.88,
     purdahMode: false,
+    useAiVoice: true,
   },
   coughLogs: [],
+  vitalsLogs: [],
   medications: [],
+  adherence: {},
   alerts: [],
   messages: [],
+  doctorBrief: '',
 };
+
+export function getTodayDateKey(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+    d.getDate()
+  ).padStart(2, '0')}`;
+}
 
 export function formatNowBn(): string {
   const now = new Date();
@@ -109,9 +138,10 @@ export function createGreetingMessage(preferredAddress: string = 'আম্ম�
     id: `msg_${Date.now()}`,
     sender: 'bot',
     tier: 'INFO',
-    text: `আসসালামু আলাইকুম ${addr}। আমি ডাঃ তোতা—তবে মনে রাখবেন, আমি আসল ডাক্তার নই, একটি কম্পিউটার প্রোগ্রাম। আজ আপনার কাশি আর শরীরটা কেমন আছে?`,
+    text: `আসসালামু আলাইকুম ${addr}। আমি ডাঃ তোতা—তবে মনে রাখবেন, আমি আসল ডাক্তার নই, একটি এআই স্বাস্থ্য সহায়ক। আজ আপনার কাশি আর শরীরটা কেমন আছে?`,
     simpleText: `আসসালামু আলাইকুম ${addr}। আমি ডাঃ তোতা, আসল ডাক্তার নই। আজ আপনার কাশি কেমন আছে?`,
     simplified: false,
+    suggestedChips: ['রাতে শুলে কাশি বাড়ে', 'শুকনো কাশি হচ্ছে', 'আজ অনেকটা ভালো আছি'],
     timestamp: formatNowBn(),
   };
 }
@@ -121,9 +151,12 @@ export function mergeState(base: DrTotaState, saved: Partial<DrTotaState>): DrTo
     profile: { ...base.profile, ...(saved.profile || {}) },
     settings: { ...base.settings, ...(saved.settings || {}) },
     coughLogs: Array.isArray(saved.coughLogs) ? saved.coughLogs : [],
+    vitalsLogs: Array.isArray(saved.vitalsLogs) ? saved.vitalsLogs : [],
     medications: Array.isArray(saved.medications) ? saved.medications : [],
+    adherence: saved.adherence && typeof saved.adherence === 'object' ? saved.adherence : {},
     alerts: Array.isArray(saved.alerts) ? saved.alerts : [],
     messages: Array.isArray(saved.messages) ? saved.messages : [],
+    doctorBrief: typeof saved.doctorBrief === 'string' ? saved.doctorBrief : '',
   };
 }
 

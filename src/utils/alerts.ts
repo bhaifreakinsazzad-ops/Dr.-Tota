@@ -1,9 +1,12 @@
 import type { DrTotaState, PatientProfile, CoughLog, Medication } from './storage';
+import { getTodayDateKey } from './storage';
 
 export function buildWhatsappSummaryText(state: DrTotaState): string {
   const p: PatientProfile = state.profile;
   const meds: Medication[] = state.medications;
   const logs: CoughLog[] = state.coughLogs;
+  const todayKey = getTodayDateKey();
+  const todayTaken = state.adherence[todayKey] || [];
 
   const mother = p.motherName ? `${p.motherName} (${p.preferredAddress})` : p.preferredAddress;
   const medLines =
@@ -11,7 +14,8 @@ export function buildWhatsappSummaryText(state: DrTotaState): string {
       ? meds
           .map((m, i) => {
             const flag = m.coughRisk === 'HIGH' ? ' [সতর্কতা: ACE Inhibitor - শুকনো কাশি হতে পারে]' : '';
-            return `${i + 1}. ${m.brandName} (${m.generic}) — ${m.prayerTime}${m.dose ? ` (${m.dose})` : ''}${flag}`;
+            const takenMark = todayTaken.includes(m.id) ? ' ✓ (আজ নেওয়া হয়েছে)' : '';
+            return `${i + 1}. ${m.brandName} (${m.generic}) — ${m.prayerTime}${m.dose ? ` (${m.dose})` : ''}${flag}${takenMark}`;
           })
           .join('\n')
       : 'কোনো ওষুধ এখনো নথিভুক্ত হয়নি';
@@ -20,12 +24,18 @@ export function buildWhatsappSummaryText(state: DrTotaState): string {
     logs.length > 0
       ? logs
           .slice(0, 5)
-          .map(
-            (l) =>
-              `• ${l.date}: ${l.type}, তীব্রতা ${l.severity}/১০ [${l.tier}] — ${l.domains.join(', ') || 'সাধারণ'}`
+          .map((l) =>
+            l.breathRate !== undefined
+              ? `• ${l.date}: শ্বাস-প্রশ্বাসের হার ${l.breathRate}/মি. [${l.tier}]`
+              : `• ${l.date}: ${l.type}, তীব্রতা ${l.severity}/১০ [${l.tier}] — ${l.domains.join(', ') || 'সাধারণ'}`
           )
           .join('\n')
       : 'এখনো কোনো কাশির ডায়েরি যোগ করা হয়নি';
+
+  const latestVital = state.vitalsLogs?.[0];
+  const vitalsLine = latestVital
+    ? `\n--- সর্বশেষ ভাইটালস (${latestVital.date}) ---\nরক্তচাপ: ${latestVital.systolic || '-'} / ${latestVital.diastolic || '-'} mmHg | SpO2: ${latestVital.spo2 || '-'}% | তাপমাত্রা: ${latestVital.tempF || '-'}°F | সুগার: ${latestVital.bloodSugar || '-'} mmol/L`
+    : '';
 
   const aceWarning = meds.some((m) => m.coughRisk === 'HIGH')
     ? '\n* ডাক্তারের জন্য বিশেষ প্রশ্ন: রক্তচাপের ওষুধ (ACE Inhibitor) থেকে কি এই শুকনো কাশি হচ্ছে? বিকল্প ARB ওষুধ বিবেচনা করা যাবে কি?'
@@ -41,9 +51,11 @@ export function buildWhatsappSummaryText(state: DrTotaState): string {
     `রোগী: ${mother}\n` +
     `কাশি স্থায়িত্ব: ${p.coughWeeks || 0} সপ্তাহ\n` +
     `পূর্বের অবস্থা: ${p.conditions || 'নথিভুক্ত নয়'}\n` +
+    `আজকের ওষুধ গ্রহণ: ${todayTaken.length}/${meds.length} টি\n` +
     `পরিবার সমন্বয়কারী: ${p.caregiverName || 'উল্লেখ নেই'} (${p.caregiverPhone || 'নম্বর নেই'})\n\n` +
-    `--- যাচাইকৃত ওষুধ ---\n${medLines}\n\n` +
-    `--- সাম্প্রতিক কাশির নথি ---\n${recentLogs}` +
+    `--- যাচাইকৃত ওষুধ ---\n${medLines}\n` +
+    vitalsLine +
+    `\n\n--- সাম্প্রতিক কাশির নথি ---\n${recentLogs}` +
     aceWarning +
     tbWarning +
     `\n\n(বি.দ্র.: এটি কেবল পর্যবেক্ষণমূলক সহায়তা; রোগ নির্ণয়ের জন্য নিবন্ধিত চিকিৎসকের পরীক্ষা অপরিহার্য।)`
@@ -69,19 +81,19 @@ export function buildTelegramPayload(profile: PatientProfile, customText?: strin
 }
 
 export async function sendTelegramAlert(token: string, chatId: string, messageText: string): Promise<boolean> {
-  if (!token || !chatId) return false;
-  const url = `https://api.telegram.org/bot${token}/sendMessage`;
   try {
-    const res = await fetch(url, {
+    const res = await fetch('/api/alerts/telegram', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        chat_id: chatId,
-        text: messageText,
-        parse_mode: 'HTML',
+        token,
+        chatId,
+        messageText,
       }),
     });
-    return res.ok;
+    if (!res.ok) return false;
+    const data = (await res.json()) as { ok?: boolean };
+    return Boolean(data.ok);
   } catch (err) {
     console.error('Failed to send Telegram alert:', err);
     return false;
@@ -89,7 +101,6 @@ export async function sendTelegramAlert(token: string, chatId: string, messageTe
 }
 
 export function sendEmergencyTelegram(profile: PatientProfile, reason: string, userInput: string): void {
-  if (!profile.tgToken || !profile.tgChatId) return;
   const mother = profile.motherName || profile.preferredAddress || 'আম্মুজি';
   const message =
     `🚨 <b>জরুরি স্বাস্থ্য সতর্কতা - ডাঃ তোতা</b> 🚨\n\n` +

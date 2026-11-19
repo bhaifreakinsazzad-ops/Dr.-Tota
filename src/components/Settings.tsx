@@ -1,4 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { FileText, Printer, Loader2 } from 'lucide-react';
+import { PredictiveArcCanvas } from '@designcodeio/threeui';
+import { animate } from 'animejs';
+import { motion } from 'motion/react';
 import {
   buildWhatsappSummaryText,
   buildWhatsappShareUrl,
@@ -40,8 +44,11 @@ const Settings: React.FC<SettingsProps> = ({
   const [tgFeedback, setTgFeedback] = useState('');
   const [tgPayloadPreview, setTgPayloadPreview] = useState('');
   const [exportFeedback, setExportFeedback] = useState('');
+  const [briefLoading, setBriefLoading] = useState(false);
+  const [briefError, setBriefError] = useState('');
   const [eraseArmed, setEraseArmed] = useState(false);
   const eraseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const briefPreviewRef = useRef<HTMLPreElement>(null);
 
   useEffect(() => {
     setProfileDraft(state.profile);
@@ -52,6 +59,20 @@ const Settings: React.FC<SettingsProps> = ({
       if (eraseTimerRef.current) clearTimeout(eraseTimerRef.current);
     };
   }, []);
+
+  // Anime.js smooth reveal when Doctor Brief updates
+  useEffect(() => {
+    if (!state.doctorBrief || !briefPreviewRef.current) return;
+    const anim = animate(briefPreviewRef.current, {
+      opacity: [0, 1],
+      translateY: [8, 0],
+      duration: 420,
+      ease: 'outCubic',
+    });
+    return () => {
+      anim.revert();
+    };
+  }, [state.doctorBrief]);
 
   const handleSaveProfile = () => {
     onUpdateState((prev) => ({
@@ -79,6 +100,13 @@ const Settings: React.FC<SettingsProps> = ({
     }));
   };
 
+  const handleToggleAiVoice = () => {
+    onUpdateState((prev) => ({
+      ...prev,
+      settings: { ...prev.settings, useAiVoice: !prev.settings.useAiVoice },
+    }));
+  };
+
   const handleRateChange = (val: number) => {
     const clamped = Math.max(0.7, Math.min(1.15, val));
     onUpdateState((prev) => ({
@@ -94,12 +122,25 @@ const Settings: React.FC<SettingsProps> = ({
       setVoiceTestMsg('নিরিবিলি মোড চালু থাকায় শব্দ বন্ধ আছে।');
       return;
     }
-    speakText(sample, state.settings.ttsRate, false, false);
-    setVoiceTestMsg(`${state.settings.ttsRate}x বয়স্ক-বান্ধব গতিতে কণ্ঠ শোনানো হচ্ছে।`);
+    void speakText(
+      sample,
+      state.settings.ttsRate,
+      false,
+      false,
+      undefined,
+      state.settings.useAiVoice
+    );
+    setVoiceTestMsg(
+      `${state.settings.ttsRate}x গতিতে ${state.settings.useAiVoice ? 'এআই বাংলা' : 'ডিভাইস'} কণ্ঠ শোনানো হচ্ছে।`
+    );
   };
 
   const handleTestTelegramPayload = async () => {
-    const updatedProfile = { ...state.profile, tgToken: profileDraft.tgToken, tgChatId: profileDraft.tgChatId };
+    const updatedProfile = {
+      ...state.profile,
+      tgToken: profileDraft.tgToken,
+      tgChatId: profileDraft.tgChatId,
+    };
     onUpdateState((prev) => ({
       ...prev,
       profile: updatedProfile,
@@ -107,7 +148,7 @@ const Settings: React.FC<SettingsProps> = ({
 
     const payload = buildTelegramPayload(updatedProfile);
     setTgPayloadPreview(
-      `Telegram Bot Endpoint: api.telegram.org/bot<TOKEN>/sendMessage\nPayload JSON:\n${JSON.stringify(
+      `Server Proxy Endpoint: POST /api/alerts/telegram\nPayload JSON:\n${JSON.stringify(
         payload,
         null,
         2
@@ -123,27 +164,51 @@ const Settings: React.FC<SettingsProps> = ({
       setTgFeedback(
         ok
           ? 'টেলিগ্রাম সেটিংস সংরক্ষিত ও পরীক্ষামূলক বার্তা পাঠানো হয়েছে!'
-          : 'সেটিংস সংরক্ষিত ও নমুনা পেলোড তৈরি হয়েছে (বার্তা পাঠাতে Token/Chat ID যাচাই করুন)'
+          : 'সেটিংস সংরক্ষিত হয়েছে (বার্তা পাঠাতে Token/Chat ID যাচাই করুন)'
       );
     } else {
       setTgFeedback('টেলিগ্রাম সেটিংস সংরক্ষিত ও নমুনা পেলোড তৈরি হয়েছে');
     }
   };
 
+  const handleGenerateDoctorBrief = async () => {
+    setBriefError('');
+    setBriefLoading(true);
+    try {
+      const res = await fetch('/api/doctor-brief', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state }),
+      });
+      const data = (await res.json()) as { brief?: string; error?: string };
+      if (!res.ok) throw new Error(data.error || 'ক্লিনিক্যাল ব্রিফ তৈরি করা যায়নি।');
+      const briefText = data.brief || '';
+      onUpdateState((prev) => ({
+        ...prev,
+        doctorBrief: briefText,
+      }));
+    } catch (err) {
+      setBriefError(err instanceof Error ? err.message : 'ত্রুটি হয়েছে।');
+    } finally {
+      setBriefLoading(false);
+    }
+  };
+
   const summaryText = buildWhatsappSummaryText(state);
   const whatsappUrl = buildWhatsappShareUrl(state);
 
-  const handleCopyDoctorSummary = async () => {
-    const ok = await copyTextToClipboard(summaryText);
+  const handleCopyDoctorSummary = async (textToCopy: string) => {
+    const ok = await copyTextToClipboard(textToCopy);
     setExportFeedback(
       ok
-        ? 'হোয়াটসঅ্যাপ সারসংক্ষেপ ক্লিপবোর্ডে কপি হয়েছে'
+        ? 'সারসংক্ষেপ ক্লিপবোর্ডে কপি হয়েছে'
         : 'কপি করা যায়নি — অনুগ্রহ করে উপরের লেখা থেকে কপি করুন'
     );
   };
 
   const handleDownloadTxt = () => {
-    triggerFileDownload(summaryText, 'dr-tota-cough-summary.txt', 'text/plain;charset=utf-8');
+    const content = state.doctorBrief ? `${state.doctorBrief}\n\n${summaryText}` : summaryText;
+    triggerFileDownload(content, 'dr-tota-cough-summary.txt', 'text/plain;charset=utf-8');
     setExportFeedback('টেক্সট ফাইল ডাউনলোড শুরু হয়েছে');
   };
 
@@ -189,12 +254,98 @@ const Settings: React.FC<SettingsProps> = ({
 
   return (
     <section className="tab-panel" id="panel-settings" aria-labelledby="tab-btn-settings">
+      {/* Full-width AI Clinical Doctor Brief Card with ThreeUI Header Strip */}
+      <div className="card">
+        <div className="threeui-telemetry-frame no-print" style={{ marginBottom: 'var(--space-md)', minHeight: '96px' }}>
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              pointerEvents: 'none',
+              opacity: 0.65,
+            }}
+            aria-hidden="true"
+          >
+            <PredictiveArcCanvas variant="predictive" mode="dark" hue={192} speed={0.75} />
+          </div>
+          <div className="threeui-telemetry-overlay">
+            <div className="brand-title-row" style={{ justifyContent: 'space-between' }}>
+              <div className="flex items-center gap-2">
+                <FileText size={22} className="text-[#38e2f4]" aria-hidden="true" />
+                <h2 className="section-heading" style={{ margin: 0, color: '#e8f8fb' }}>
+                  ডাক্তারের জন্য এআই ক্লিনিক্যাল ব্রিফ (বাংলা ও ইংরেজি)
+                </h2>
+              </div>
+              <div className="header-actions no-print">
+                <motion.button
+                  type="button"
+                  whileTap={{ scale: 0.97 }}
+                  className="btn btn-primary btn-sm"
+                  disabled={briefLoading}
+                  onClick={() => void handleGenerateDoctorBrief()}
+                >
+                  {briefLoading ? (
+                    <>
+                      <Loader2 size={16} className="animate-spin" aria-hidden="true" />
+                      <span>তৈরি হচ্ছে…</span>
+                    </>
+                  ) : (
+                    <span>এআই ডাক্তার ব্রিফ তৈরি করুন</span>
+                  )}
+                </motion.button>
+                {state.doctorBrief && (
+                  <>
+                    <motion.button
+                      type="button"
+                      whileTap={{ scale: 0.97 }}
+                      className="btn btn-stage-ghost btn-sm"
+                      onClick={() => void handleCopyDoctorSummary(state.doctorBrief)}
+                    >
+                      ব্রিফ কপি করুন
+                    </motion.button>
+                    <motion.button
+                      type="button"
+                      whileTap={{ scale: 0.97 }}
+                      className="btn btn-stage-ghost btn-sm"
+                      onClick={() => window.print()}
+                    >
+                      <Printer size={16} aria-hidden="true" />
+                      <span>প্রিন্ট / PDF</span>
+                    </motion.button>
+                  </>
+                )}
+              </div>
+            </div>
+            <p style={{ margin: '0.35rem 0 0 0', fontSize: 'var(--label-size)', color: '#b4dce4' }}>
+              চিকিৎসকের চেম্বারে দেখানোর জন্য কাশির ৬-ডোমেইন ইতিহাস, ভাইটালস, ওষুধের তালিকা (ACE-I সতর্কতা) ও টিবি স্ক্রিনিংয়ের একপাতার সারসংক্ষেপ তৈরি করুন।
+            </p>
+          </div>
+        </div>
+
+        {briefError && (
+          <div className="error-banner" style={{ marginBottom: 'var(--space-sm)' }} role="alert">
+            {briefError}
+          </div>
+        )}
+
+        {state.doctorBrief ? (
+          <pre ref={briefPreviewRef} className="code-preview" style={{ maxHeight: '360px' }}>
+            {state.doctorBrief}
+          </pre>
+        ) : (
+          <div className="empty-state">
+            <strong>এখনো এআই ডাক্তার ব্রিফ তৈরি করা হয়নি</strong>
+            <span>উপরের &apos;এআই ডাক্তার ব্রিফ তৈরি করুন&apos; বোতামে চাপ দিলে বর্তমান সব তথ্য গুছিয়ে রিপোর্ট তৈরি হবে।</span>
+          </div>
+        )}
+      </div>
+
       <div className="two-col-grid">
         {/* 1. Clean Patient & Caregiver Profile */}
         <div className="card">
           <h2 className="section-heading">আম্মুজি ও পরিবারের প্রোফাইল</h2>
           <p className="lede" style={{ marginBottom: 'var(--space-md)' }}>
-            কোনো কাল্পনিক তথ্য আগে থেকে দেওয়া নেই। পরিবারের সদস্য হিসেবে আম্মুজির প্রকৃত তথ্য এখানে লিখুন।
+            পরিবারের সদস্য হিসেবে আম্মুজির প্রকৃত তথ্য ও পছন্দের ভাষা এখানে সংরক্ষণ করুন।
           </p>
 
           <div className="form-grid">
@@ -236,7 +387,7 @@ const Settings: React.FC<SettingsProps> = ({
 
             <div className="field-group">
               <label className="field-label" htmlFor="cfg-dialect">
-                ভাষা ও আঞ্চলিক ধরন
+                ভাষা ও আঞ্চলিক ধরন (এআই কথা বলার ধরন)
               </label>
               <select
                 className="select-control"
@@ -263,7 +414,7 @@ const Settings: React.FC<SettingsProps> = ({
                 min={0}
                 max={150}
                 step={0.5}
-                className="input-control"
+                className="input-control tabular-nums"
                 id="cfg-cough-weeks"
                 value={profileDraft.coughWeeks}
                 onChange={(e) =>
@@ -313,7 +464,7 @@ const Settings: React.FC<SettingsProps> = ({
               </label>
               <input
                 type="tel"
-                className="input-control"
+                className="input-control tabular-nums"
                 id="cfg-caregiver-phone"
                 value={profileDraft.caregiverPhone}
                 onChange={(e) =>
@@ -328,9 +479,14 @@ const Settings: React.FC<SettingsProps> = ({
             className="input-row-end"
             style={{ marginTop: 'var(--space-md)', justifyContent: 'space-between' }}
           >
-            <button type="button" className="btn btn-primary" onClick={handleSaveProfile}>
+            <motion.button
+              type="button"
+              whileTap={{ scale: 0.97 }}
+              className="btn btn-primary"
+              onClick={handleSaveProfile}
+            >
               প্রোফাইল সংরক্ষণ করুন
-            </button>
+            </motion.button>
             <span className="inline-feedback" id="profile-save-msg">
               {profileMsg}
             </span>
@@ -341,7 +497,7 @@ const Settings: React.FC<SettingsProps> = ({
         <div className="card">
           <h2 className="section-heading">অ্যাক্সেসিবিলিটি ও বয়স্ক-বান্ধব কণ্ঠ</h2>
           <p className="lede" style={{ marginBottom: 'var(--space-md)' }}>
-            আম্মুজির দৃষ্টিশক্তি ও শ্রবণশক্তির সুবিধার্থে লেখার আকার, উচ্চ কনট্রাস্ট এবং কণ্ঠের গতি নিয়ন্ত্রণ করুন।
+            আম্মুজির দৃষ্টিশক্তি ও শ্রবণশক্তির সুবিধার্থে লেখার আকার, কনট্রাস্ট এবং এআই বাংলা কণ্ঠ নিয়ন্ত্রণ করুন।
           </p>
 
           <div style={{ marginBottom: 'var(--space-md)' }}>
@@ -354,34 +510,44 @@ const Settings: React.FC<SettingsProps> = ({
                 { label: '১.১৫x (বড়)', val: 1.15 },
                 { label: '১.৩০x (আরও বড়)', val: 1.3 },
               ].map((opt) => (
-                <button
+                <motion.button
                   key={opt.val}
                   type="button"
+                  whileTap={{ scale: 0.97 }}
                   className={`btn btn-sm ${
                     Number(state.settings.zoom) === opt.val ? 'btn-primary' : 'btn-outline'
                   }`}
                   onClick={() => handleSetFontZoom(opt.val)}
                 >
                   {opt.label}
-                </button>
+                </motion.button>
               ))}
             </div>
           </div>
 
-          <div style={{ marginBottom: 'var(--space-md)' }}>
-            <span className="field-label" style={{ display: 'block', marginBottom: 'var(--space-xs)' }}>
-              দৃষ্টি-সহায়ক কনট্রাস্ট মোড
-            </span>
-            <button
+          <div className="header-actions" style={{ marginBottom: 'var(--space-md)' }}>
+            <motion.button
               type="button"
-              className="btn btn-soft"
+              whileTap={{ scale: 0.97 }}
+              className="btn btn-soft btn-sm"
               id="btn-contrast-toggle"
               onClick={handleToggleContrast}
             >
               {state.settings.highContrast
-                ? 'উচ্চ কনট্রাস্ট মোড: চালু'
-                : 'উচ্চ কনট্রাস্ট মোড: বন্ধ'}
-            </button>
+                ? 'উচ্চ কনট্রাস্ট: চালু'
+                : 'উচ্চ কনট্রাস্ট: বন্ধ'}
+            </motion.button>
+
+            <motion.button
+              type="button"
+              whileTap={{ scale: 0.97 }}
+              className={`btn btn-sm ${state.settings.useAiVoice ? 'btn-primary' : 'btn-outline'}`}
+              onClick={handleToggleAiVoice}
+            >
+              {state.settings.useAiVoice
+                ? 'এআই প্রাকৃতিক কণ্ঠ: চালু'
+                : 'এআই প্রাকৃতিক কণ্ঠ: বন্ধ'}
+            </motion.button>
           </div>
 
           <div className="form-grid">
@@ -410,7 +576,7 @@ const Settings: React.FC<SettingsProps> = ({
                 min={0.7}
                 max={1.15}
                 step={0.02}
-                className="input-control"
+                className="input-control tabular-nums"
                 id="input-tts-rate"
                 value={state.settings.ttsRate}
                 onChange={(e) => {
@@ -425,9 +591,14 @@ const Settings: React.FC<SettingsProps> = ({
             className="input-row-end"
             style={{ marginTop: 'var(--space-md)', justifyContent: 'space-between' }}
           >
-            <button type="button" className="btn btn-outline" onClick={handleTestVoice}>
+            <motion.button
+              type="button"
+              whileTap={{ scale: 0.97 }}
+              className="btn btn-outline"
+              onClick={handleTestVoice}
+            >
               কণ্ঠ পরীক্ষা করে শুনুন
-            </button>
+            </motion.button>
             <span className="inline-feedback" id="voice-test-msg">
               {voiceTestMsg}
             </span>
@@ -438,7 +609,7 @@ const Settings: React.FC<SettingsProps> = ({
         <div className="card">
           <h2 className="section-heading">জরুরি সতর্কতা ও টেলিগ্রাম বট সেটআপ</h2>
           <p className="lede" style={{ marginBottom: 'var(--space-md)' }}>
-            রেড-ফ্ল্যাগ (টিয়ার-০) বা ২৪ ঘণ্টার সতর্কতা (টিয়ার-১) ধরা পড়লে টেলিগ্রাম ওয়েব-হুক পেলোড তৈরি ও পরিবার অ্যালার্ট নথিভুক্ত হবে।
+            রেড-ফ্ল্যাগ (টিয়ার-০) বা ২৪ ঘণ্টার সতর্কতা (টিয়ার-১) ধরা পড়লে সার্ভার প্রক্সির মাধ্যমে নিরাপদে টেলিগ্রাম অ্যালার্ট পাঠানো হবে।
           </p>
 
           <div className="form-grid">
@@ -479,13 +650,14 @@ const Settings: React.FC<SettingsProps> = ({
             className="input-row-end"
             style={{ marginTop: 'var(--space-md)', justifyContent: 'space-between' }}
           >
-            <button
+            <motion.button
               type="button"
+              whileTap={{ scale: 0.97 }}
               className="btn btn-outline"
-              onClick={handleTestTelegramPayload}
+              onClick={() => void handleTestTelegramPayload()}
             >
-              টেলিগ্রাম সেটিংস সংরক্ষণ ও নমুনা পেলোড দেখুন
-            </button>
+              টেলিগ্রাম সেটিংস সংরক্ষণ ও পরীক্ষা করুন
+            </motion.button>
             <span className="inline-feedback" id="tg-feedback">
               {tgFeedback}
             </span>
@@ -523,7 +695,7 @@ const Settings: React.FC<SettingsProps> = ({
                     <strong>
                       {a.level}: {a.reason}
                     </strong>
-                    <span className="kpi-caption">{a.time}</span>
+                    <span className="kpi-caption tabular-nums">{a.time}</span>
                   </div>
                   <div className="kpi-caption">উদ্ধৃতি: &quot;{a.quote}&quot;</div>
                 </div>
@@ -534,9 +706,9 @@ const Settings: React.FC<SettingsProps> = ({
 
         {/* 4. One-Tap WhatsApp Summary Exporter & PDPA 2026 Controls */}
         <div className="card">
-          <h2 className="section-heading">ডাক্তার ও হোয়াটসঅ্যাপ সারসংক্ষেপ ও PDPA ২০২৬</h2>
+          <h2 className="section-heading">হোয়াটসঅ্যাপ সারসংক্ষেপ ও PDPA ২০২৬</h2>
           <p className="lede" style={{ marginBottom: 'var(--space-md)' }}>
-            কাশির ডায়েরি, ওষুধের তালিকা এবং এনটিপি টিবি/এক্স-রে চেকলিস্ট এক ক্লিকে কপি বা ডাউনলোড করে হোয়াটসঅ্যাপে পাঠান।
+            কাশির ডায়েরি, ভাইটালস, ওষুধের তালিকা এবং এনটিপি টিবি/এক্স-রে চেকলিস্ট এক ক্লিকে কপি বা ডাউনলোড করে হোয়াটসঅ্যাপে পাঠান।
           </p>
 
           <pre className="code-preview" id="whatsapp-summary-preview">
@@ -544,13 +716,14 @@ const Settings: React.FC<SettingsProps> = ({
           </pre>
 
           <div className="header-actions" style={{ marginTop: 'var(--space-md)' }}>
-            <button
+            <motion.button
               type="button"
+              whileTap={{ scale: 0.97 }}
               className="btn btn-primary"
-              onClick={handleCopyDoctorSummary}
+              onClick={() => void handleCopyDoctorSummary(summaryText)}
             >
               হোয়াটসঅ্যাপ সারসংক্ষেপ কপি করুন
-            </button>
+            </motion.button>
             <a
               href={whatsappUrl}
               target="_blank"
@@ -559,12 +732,22 @@ const Settings: React.FC<SettingsProps> = ({
             >
               WhatsApp-এ খুলুন
             </a>
-            <button type="button" className="btn btn-outline" onClick={handleDownloadTxt}>
+            <motion.button
+              type="button"
+              whileTap={{ scale: 0.97 }}
+              className="btn btn-outline"
+              onClick={handleDownloadTxt}
+            >
               টেক্সট ডাউনলোড (.txt)
-            </button>
-            <button type="button" className="btn btn-soft btn-sm" onClick={handleDownloadJson}>
+            </motion.button>
+            <motion.button
+              type="button"
+              whileTap={{ scale: 0.97 }}
+              className="btn btn-soft btn-sm"
+              onClick={handleDownloadJson}
+            >
               JSON ব্যাকআপ
-            </button>
+            </motion.button>
           </div>
 
           {exportFeedback && (
@@ -601,8 +784,9 @@ const Settings: React.FC<SettingsProps> = ({
               বাংলাদেশ ব্যক্তিগত তথ্য সুরক্ষা আইন (PDPA ২০২৬) অনুযায়ী আম্মুজির কথোপকথন, কাশির ডায়েরি ও ওষুধের তথ্য সম্পূর্ণ পরিবারের নিয়ন্ত্রণে থাকে। ভয়েসে{' '}
               <strong>“সব তথ্য মুছে ফেলো”</strong> বললে অথবা নিচের বোতামে দুইবার চাপলে সব সংরক্ষিত তথ্য তাৎক্ষণিক মুছে যাবে।
             </p>
-            <button
+            <motion.button
               type="button"
+              whileTap={{ scale: 0.97 }}
               className="btn btn-emergency btn-sm"
               id="btn-erase-all"
               onClick={handleEraseClick}
@@ -610,7 +794,7 @@ const Settings: React.FC<SettingsProps> = ({
               {eraseArmed
                 ? 'নিশ্চিত করতে আরেকবার চাপুন (সব মুছে যাবে)'
                 : 'সব তথ্য মুছে ফেলুন (PDPA ২০২৬)'}
-            </button>
+            </motion.button>
           </div>
         </div>
       </div>
