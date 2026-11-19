@@ -1,12 +1,14 @@
 import React, { useState, useEffect } from 'react';
+import { Info, Shield, Phone, WifiOff } from 'lucide-react';
 
 interface HeaderProps {
   purdahMode: boolean;
+  syncStatus: string;
   onTogglePurdah: () => void;
   onEmergency: () => void;
 }
 
-const Header: React.FC<HeaderProps> = ({ purdahMode, onTogglePurdah, onEmergency }) => {
+const Header: React.FC<HeaderProps> = ({ purdahMode, syncStatus, onTogglePurdah, onEmergency }) => {
   const [isOnline, setIsOnline] = useState<boolean>(() =>
     typeof navigator !== 'undefined' ? navigator.onLine : true
   );
@@ -25,73 +27,69 @@ const Header: React.FC<HeaderProps> = ({ purdahMode, onTogglePurdah, onEmergency
   }, []);
 
   return (
-    <header className="relative z-50 bg-gradient-to-r from-emerald-700 to-teal-600 text-white shadow-lg">
-      <div className="max-w-4xl mx-auto px-4 py-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="text-2xl">🦜</span>
-            <div>
-              <h1 className="text-lg font-bold leading-tight">ডাঃ তোতা (Dr. Tota)</h1>
-              <p className="text-xs text-emerald-100 leading-tight">
-                একটি এআই স্বাস্থ্য সহকারী • আসল ডাক্তার নয়
-              </p>
-            </div>
+    <header className="app-header">
+      <div className="app-header-main">
+        <div className="brand-block">
+          <div className="brand-title-row">
+            <h1 className="brand-title">ডাঃ তোতা</h1>
+            <span className="disclaimer-pill" id="header-disclaimer">
+              <Info size={18} aria-hidden="true" />
+              ডক্টর টোটা একটি এআই স্বাস্থ্য সহায়ক, আসল ডাক্তার নন
+            </span>
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={onTogglePurdah}
-              className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
-                purdahMode
-                  ? 'bg-yellow-400 text-yellow-900'
-                  : 'bg-white/20 text-white hover:bg-white/30'
-              }`}
-              title="নিরিবিলি মোড - অডিও বন্ধ"
-            >
-              {purdahMode ? '🔇 নিরিবিলি' : '🔊 নিরিবিলি'}
-            </button>
-            <button
-              onClick={onEmergency}
-              className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-full text-xs font-bold animate-pulse shadow-lg"
-            >
-              🚨 জরুরি ৯৯৯
-            </button>
-          </div>
+          <p className="lede" id="header-subtitle">
+            আম্মুজির কাশি পর্যবেক্ষণ, ওষুধ যাচাই এবং পরিবার সমন্বয় সহায়ক
+          </p>
         </div>
-        <div className="flex items-center gap-3 mt-1 text-xs text-emerald-100">
-          <span>{isOnline ? '☁️ ক্লাউড সংরক্ষিত' : '💾 স্থানীয়ভাবে সংরক্ষিত'}</span>
-          <span>•</span>
+
+        <div className="header-actions">
           <span
+            className="sync-chip"
+            id="sync-status-pill"
             role="status"
             aria-live="polite"
-            className="flex items-center gap-1.5 font-medium"
+            data-offline={!isOnline ? 'true' : 'false'}
           >
-            {isOnline ? (
-              <>
-                <span className="w-2 h-2 bg-green-300 rounded-full inline-block"></span>
-                <span>অনলাইন • প্রস্তুত</span>
-              </>
-            ) : (
-              <>
-                <span className="w-2 h-2 bg-amber-300 rounded-full inline-block animate-pulse"></span>
-                <span className="text-amber-200">অফলাইন</span>
-              </>
-            )}
+            <span
+              className={`w-2 h-2 rounded-full inline-block ${
+                isOnline ? 'bg-[#2e7d4f]' : 'bg-[#b86e00] animate-pulse'
+              }`}
+              aria-hidden="true"
+            />
+            {isOnline ? syncStatus : 'অফলাইন সেশন'}
           </span>
+
+          <button
+            type="button"
+            className="btn btn-soft btn-sm"
+            id="btn-purdah"
+            onClick={onTogglePurdah}
+            aria-pressed={purdahMode}
+          >
+            <Shield size={18} aria-hidden="true" />
+            <span id="purdah-btn-label">
+              {purdahMode ? 'নিরিবিলি মোড: চালু' : 'নিরিবিলি মোড: বন্ধ'}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            className="btn btn-emergency"
+            id="btn-emergency-top"
+            onClick={onEmergency}
+          >
+            <Phone size={20} aria-hidden="true" />
+            জরুরি: ৯৯৯ / ১৬২৬৩
+          </button>
         </div>
       </div>
 
       {!isOnline && (
-        <div
-          role="status"
-          aria-live="polite"
-          className="bg-amber-400 text-amber-950 border-t border-amber-300 px-4 py-1.5"
-        >
-          <div className="max-w-4xl mx-auto flex items-center gap-2 text-xs font-semibold">
-            <span aria-hidden="true">📵</span>
-            <span>
-              আপনি এখন অফলাইনে আছেন — ইন্টারনেট না থাকায় ভয়েস সেবা (ভয়েস ইনপুট ও অডিও) সীমিত হতে পারে।
-            </span>
-          </div>
+        <div className="offline-banner" role="status" aria-live="polite">
+          <WifiOff size={18} aria-hidden="true" className="shrink-0 text-[#b86e00]" />
+          <span>
+            আপনি এখন অফলাইনে আছেন — ইন্টারনেট না থাকায় ভয়েস সেবা (ভয়েস ইনপুট ও অডিও) সীমিত হতে পারে। স্থানীয় ডায়েরি ও তথ্য সংরক্ষণ চালু আছে।
+          </span>
         </div>
       )}
     </header>

@@ -1,146 +1,168 @@
-// localStorage Management for Dr. Tota
 export interface PatientProfile {
-  name: string;
+  motherName: string;
   preferredAddress: string;
   dialect: string;
   coughWeeks: number;
+  conditions: string;
   caregiverName: string;
   caregiverPhone: string;
-  conditions: string;
+  tgToken: string;
+  tgChatId: string;
+}
+
+export interface AppSettings {
+  zoom: number;
+  highContrast: boolean;
+  ttsRate: number;
+  purdahMode: boolean;
 }
 
 export interface CoughLog {
   id: string;
   date: string;
-  type: 'dry' | 'wet';
-  timing: string;
-  associated: string[];
-  notes: string;
+  timestamp?: number;
+  weeks: number;
+  type: string;
+  severity: number;
+  breathRate?: number;
+  domains: string[];
+  note: string;
+  tier: 'T0' | 'T1' | 'T2' | 'T3';
 }
 
 export interface Medication {
   id: string;
-  brand: string;
+  brandName: string;
   generic: string;
-  strength: string;
-  drugClass: string;
-  schedule: string;
-  coughInducing: boolean;
-  warningBn: string;
+  cls: string;
+  coughRisk: 'HIGH' | 'MODERATE' | 'LOW' | 'UNKNOWN';
+  note: string;
+  prayerTime: string;
+  dose: string;
+}
+
+export interface CaregiverAlert {
+  id: string;
+  level: string;
+  reason: string;
+  quote: string;
+  time: string;
 }
 
 export interface ChatMessage {
   id: string;
-  role: 'user' | 'assistant' | 'system';
+  sender: 'user' | 'bot';
+  tier?: 'INFO' | 'T0' | 'T1' | 'T2' | 'T3';
   text: string;
+  simpleText?: string;
+  simplified?: boolean;
   timestamp: string;
-  isEmergency?: boolean;
 }
 
-export interface AppSettings {
-  fontSize: number;
-  speechRate: number;
-  highContrast: boolean;
-  purdahMode: boolean;
-  autoReadAloud: boolean;
-  telegramToken: string;
-  telegramChatId: string;
+export interface DrTotaState {
+  profile: PatientProfile;
+  settings: AppSettings;
+  coughLogs: CoughLog[];
+  medications: Medication[];
+  alerts: CaregiverAlert[];
+  messages: ChatMessage[];
 }
 
-const STORAGE_KEYS = {
-  profile: 'dr_tota_profile',
-  coughLogs: 'dr_tota_cough_logs',
-  medications: 'dr_tota_medications',
-  chatHistory: 'dr_tota_chat_history',
-  settings: 'dr_tota_settings',
-};
+const STORAGE_KEY = 'dr_tota_vitals_state_v2';
 
-export function getProfile(): PatientProfile {
-  const data = localStorage.getItem(STORAGE_KEYS.profile);
-  if (data) return JSON.parse(data);
-  return {
-    name: '',
-    preferredAddress: 'মা',
-    dialect: 'সহজ প্রমিত বাংলা',
+export const DEFAULT_STATE: DrTotaState = {
+  profile: {
+    motherName: '',
+    preferredAddress: 'আম্মুজি',
+    dialect: 'প্রমিত বাংলা ও সহজ চলিত ভাষা',
     coughWeeks: 0,
+    conditions: '',
     caregiverName: '',
     caregiverPhone: '',
-    conditions: '',
-  };
-}
-
-export function saveProfile(profile: PatientProfile): void {
-  localStorage.setItem(STORAGE_KEYS.profile, JSON.stringify(profile));
-}
-
-export function getCoughLogs(): CoughLog[] {
-  const data = localStorage.getItem(STORAGE_KEYS.coughLogs);
-  return data ? JSON.parse(data) : [];
-}
-
-export function saveCoughLogs(logs: CoughLog[]): void {
-  localStorage.setItem(STORAGE_KEYS.coughLogs, JSON.stringify(logs));
-}
-
-export function addCoughLog(log: CoughLog): void {
-  const logs = getCoughLogs();
-  logs.push(log);
-  saveCoughLogs(logs);
-}
-
-export function getMedications(): Medication[] {
-  const data = localStorage.getItem(STORAGE_KEYS.medications);
-  return data ? JSON.parse(data) : [];
-}
-
-export function saveMedications(meds: Medication[]): void {
-  localStorage.setItem(STORAGE_KEYS.medications, JSON.stringify(meds));
-}
-
-export function addMedication(med: Medication): void {
-  const meds = getMedications();
-  meds.push(med);
-  saveMedications(meds);
-}
-
-export function removeMedication(id: string): void {
-  const meds = getMedications().filter(m => m.id !== id);
-  saveMedications(meds);
-}
-
-export function getChatHistory(): ChatMessage[] {
-  const data = localStorage.getItem(STORAGE_KEYS.chatHistory);
-  return data ? JSON.parse(data) : [];
-}
-
-export function saveChatHistory(messages: ChatMessage[]): void {
-  localStorage.setItem(STORAGE_KEYS.chatHistory, JSON.stringify(messages));
-}
-
-export function addChatMessage(msg: ChatMessage): void {
-  const history = getChatHistory();
-  history.push(msg);
-  saveChatHistory(history);
-}
-
-export function getSettings(): AppSettings {
-  const data = localStorage.getItem(STORAGE_KEYS.settings);
-  if (data) return JSON.parse(data);
-  return {
-    fontSize: 1.0,
-    speechRate: 0.88,
+    tgToken: '',
+    tgChatId: '',
+  },
+  settings: {
+    zoom: 1,
     highContrast: false,
+    ttsRate: 0.88,
     purdahMode: false,
-    autoReadAloud: true,
-    telegramToken: '',
-    telegramChatId: '',
+  },
+  coughLogs: [],
+  medications: [],
+  alerts: [],
+  messages: [],
+};
+
+export function formatNowBn(): string {
+  const now = new Date();
+  return (
+    now.toLocaleTimeString('bn-BD', { hour: '2-digit', minute: '2-digit' }) +
+    ' • ' +
+    now.toLocaleDateString('bn-BD', { day: 'numeric', month: 'short' })
+  );
+}
+
+export function createGreetingMessage(preferredAddress: string = 'আম্মুজি'): ChatMessage {
+  const addr = preferredAddress || 'আম্মুজি';
+  return {
+    id: `msg_${Date.now()}`,
+    sender: 'bot',
+    tier: 'INFO',
+    text: `আসসালামু আলাইকুম ${addr}। আমি ডাঃ তোতা—তবে মনে রাখবেন, আমি আসল ডাক্তার নই, একটি কম্পিউটার প্রোগ্রাম। আজ আপনার কাশি আর শরীরটা কেমন আছে?`,
+    simpleText: `আসসালামু আলাইকুম ${addr}। আমি ডাঃ তোতা, আসল ডাক্তার নই। আজ আপনার কাশি কেমন আছে?`,
+    simplified: false,
+    timestamp: formatNowBn(),
   };
 }
 
-export function saveSettings(settings: AppSettings): void {
-  localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(settings));
+export function mergeState(base: DrTotaState, saved: Partial<DrTotaState>): DrTotaState {
+  return {
+    profile: { ...base.profile, ...(saved.profile || {}) },
+    settings: { ...base.settings, ...(saved.settings || {}) },
+    coughLogs: Array.isArray(saved.coughLogs) ? saved.coughLogs : [],
+    medications: Array.isArray(saved.medications) ? saved.medications : [],
+    alerts: Array.isArray(saved.alerts) ? saved.alerts : [],
+    messages: Array.isArray(saved.messages) ? saved.messages : [],
+  };
+}
+
+export function loadAppState(): DrTotaState {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<DrTotaState>;
+      const merged = mergeState(DEFAULT_STATE, parsed);
+      if (merged.messages.length === 0) {
+        merged.messages = [createGreetingMessage(merged.profile.preferredAddress)];
+      }
+      return merged;
+    }
+  } catch (err) {
+    console.warn('Failed to parse saved Dr. Tota state:', err);
+  }
+  const initial = structuredClone(DEFAULT_STATE);
+  initial.messages = [createGreetingMessage(initial.profile.preferredAddress)];
+  return initial;
+}
+
+export function saveAppState(state: DrTotaState): boolean {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    return true;
+  } catch (err) {
+    console.error('Failed to save Dr. Tota state:', err);
+    return false;
+  }
 }
 
 export function clearAllData(): void {
-  Object.values(STORAGE_KEYS).forEach(key => localStorage.removeItem(key));
+  localStorage.removeItem(STORAGE_KEY);
+  [
+    'dr_tota_profile',
+    'dr_tota_cough_logs',
+    'dr_tota_medications',
+    'dr_tota_chat_history',
+    'dr_tota_settings',
+  ].forEach((k) => localStorage.removeItem(k));
 }

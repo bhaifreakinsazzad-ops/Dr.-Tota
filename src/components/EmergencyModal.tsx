@@ -1,56 +1,105 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
+import { EMERGENCY_SCRIPT_BN } from '../utils/safetyEngine';
+import { copyTextToClipboard } from '../utils/alerts';
+import { stopSpeaking } from '../utils/speech';
 
 interface EmergencyModalProps {
   isOpen: boolean;
+  reason: string;
+  motherLabel: string;
   onClose: () => void;
-  emergencyScript: string;
 }
 
-const EmergencyModal: React.FC<EmergencyModalProps> = ({ isOpen, onClose, emergencyScript }) => {
+const EmergencyModal: React.FC<EmergencyModalProps> = ({
+  isOpen,
+  reason,
+  motherLabel,
+  onClose,
+}) => {
+  const [copyFeedback, setCopyFeedback] = useState('');
+
+  useEffect(() => {
+    if (isOpen) {
+      setCopyFeedback('');
+    }
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
+  const reasonText =
+    reason === 'manual'
+      ? 'শনাক্তকৃত কারণ: সরাসরি জরুরি বোতাম চাপ হয়েছে'
+      : `শনাক্তকৃত জরুরি লক্ষণ: ${reason}`;
+
+  const handleCopyDispatch = async () => {
+    const msg = `[জরুরি সতর্কতা - ডাঃ তোতা] ${motherLabel || 'আম্মুজি'}-এর সম্ভাব্য জরুরি লক্ষণ দেখা দিয়েছে (${reasonText})। অবিলম্বে ৯৯৯ বা নিকটস্থ হাসপাতালে যোগাযোগ করুন।`;
+    const ok = await copyTextToClipboard(msg);
+    setCopyFeedback(
+      ok
+        ? 'জরুরি বার্তা কপি হয়েছে — পরিবারের হোয়াটসঅ্যাপে পেস্ট করে পাঠান'
+        : 'কপি করা যায়নি — অনুগ্রহ করে সরাসরি ৯৯৯ নম্বরে কল করুন'
+    );
+  };
+
+  const handleClose = () => {
+    stopSpeaking();
+    onClose();
+  };
+
   return (
-    <div className="fixed inset-0 z-[100] bg-red-900/95 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl border-4 border-red-500">
-        <div className="text-center mb-4">
-          <div className="text-5xl mb-2">🚨</div>
-          <h2 className="text-2xl font-bold text-red-700">জরুরি সতর্কতা</h2>
+    <div
+      className="modal-backdrop"
+      id="emergency-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="emergency-modal-title"
+    >
+      <div className="modal-dialog">
+        <div className="brand-title-row" style={{ justifyContent: 'space-between' }}>
+          <h2 className="section-heading" id="emergency-modal-title" style={{ color: 'var(--error)', margin: 0 }}>
+            জরুরি চিকিৎসাসহায়তা প্রোটোকল (টিয়ার-০)
+          </h2>
+          <span className="chip" data-status="alert">
+            তাৎক্ষণিক পদক্ষেপ
+          </span>
         </div>
 
-        <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4">
-          <p className="text-red-900 text-base leading-relaxed font-medium">
-            {emergencyScript}
+        <div className="status-card" data-status="alert">
+          <p className="msg-body" style={{ fontWeight: 700, color: 'var(--on-surface)' }}>
+            {EMERGENCY_SCRIPT_BN}
           </p>
         </div>
 
-        <div className="space-y-3 mb-4">
-          <a
-            href="tel:999"
-            className="block w-full py-3 bg-red-600 hover:bg-red-700 text-white text-center rounded-xl font-bold text-lg transition-colors"
-          >
-            📞 এখনই ৯৯৯ কল করুন
+        <p className="lede">{reasonText}</p>
+
+        <div className="two-col-grid" style={{ gap: 'var(--space-sm)' }}>
+          <a href="tel:999" className="btn btn-emergency" style={{ textAlign: 'center' }}>
+            জাতীয় জরুরি সেবা: ৯৯৯
           </a>
-          <a
-            href="tel:16263"
-            className="block w-full py-3 bg-orange-500 hover:bg-orange-600 text-white text-center rounded-xl font-bold text-lg transition-colors"
-          >
-            📞 ১৬২৬৩ শাস্থ্য বাতায়ন
+          <a href="tel:16263" className="btn btn-primary" style={{ textAlign: 'center' }}>
+            স্বাস্থ্য বাতায়ন (২৪/৭ ডাক্তার): ১৬২৬৩
           </a>
         </div>
 
-        <div className="bg-gray-50 rounded-xl p-3 mb-4">
-          <p className="text-sm text-gray-600 text-center">
-            🚫 দয়া করে শান্ত হয়ে বসুন। হাঁটাচলা করবেন না।
-            <br />পাশের কাউকে ডাকুন।
-          </p>
+        <div className="callout-info">
+          <strong>তাৎক্ষণিক নিরাপদ করণীয়:</strong>
+          <ul style={{ margin: 'var(--space-xs) 0 0 0', paddingLeft: 'var(--space-lg)' }}>
+            <li>সোজা হয়ে বসুন বা আধা-শোয়া অবস্থায় আরাম করে থাকুন (জোর করে হাঁটবেন না)।</li>
+            <li>একা থাকলে ঘরের দরজার ছিটকিনি খুলে রাখুন যাতে সাহায্য দ্রুত ঢুকতে পারে।</li>
+            <li>সম্ভব হলে পাশের বিশ্বস্ত কাউকে বা দায়িত্বপ্রাপ্ত পরিবারের সদস্যকে ডাকুন।</li>
+          </ul>
         </div>
 
-        <button
-          onClick={onClose}
-          className="w-full py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-xl font-medium transition-colors"
-        >
-          বন্ধ করুন
-        </button>
+        <div className="header-actions" style={{ justifyContent: 'space-between' }}>
+          <button type="button" className="btn btn-outline" onClick={handleCopyDispatch}>
+            জরুরি বার্তা কপি করে পরিবারকে পাঠান
+          </button>
+          <button type="button" className="btn btn-soft" onClick={handleClose}>
+            আমি নিরাপদ আছি / বন্ধ করুন
+          </button>
+        </div>
+
+        {copyFeedback && <span className="inline-feedback">{copyFeedback}</span>}
       </div>
     </div>
   );

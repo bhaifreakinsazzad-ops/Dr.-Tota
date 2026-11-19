@@ -1,233 +1,366 @@
-import React, { useState, useEffect } from 'react';
-import { getProfile, saveProfile, getSettings, saveSettings, clearAllData, getCoughLogs, getMedications, type PatientProfile, type AppSettings } from '../utils/storage';
-import { sendTelegramAlert, openWhatsAppReport } from '../utils/alerts';
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  buildWhatsappSummaryText,
+  buildWhatsappShareUrl,
+  buildTelegramPayload,
+  sendTelegramAlert,
+  copyTextToClipboard,
+  triggerFileDownload,
+} from '../utils/alerts';
+import { speakText } from '../utils/speech';
+import {
+  type DrTotaState,
+  type PatientProfile,
+  DEFAULT_STATE,
+  mergeState,
+} from '../utils/storage';
 
-const Settings: React.FC = () => {
-  const [profile, setProfile] = useState<PatientProfile>(getProfile());
-  const [settings, setSettings] = useState<AppSettings>(getSettings());
-  const [saved, setSaved] = useState(false);
-  const [telegramTest, setTelegramTest] = useState('');
-  const [showClearConfirm, setShowClearConfirm] = useState(false);
+interface SettingsProps {
+  state: DrTotaState;
+  onUpdateState: (updater: (prev: DrTotaState) => DrTotaState) => void;
+  onCompleteErasure: (fromVoice: boolean) => void;
+}
 
-  const handleProfileChange = (field: keyof PatientProfile, value: string | number) => {
-    const updated = { ...profile, [field]: value };
-    setProfile(updated);
-    saveProfile(updated);
+const ADDRESS_OPTIONS = ['আম্মুজি', 'মা', 'আম্মা', 'খালা'];
+const DIALECT_OPTIONS = [
+  'প্রমিত বাংলা ও সহজ চলিত ভাষা',
+  'সিলেটি ও চলিত বাংলা মিশ্র',
+  'চট্টগ্রামী ও চলিত বাংলা মিশ্র',
+  'বাংলা ও বাংলিশ মিশ্র',
+];
+
+const Settings: React.FC<SettingsProps> = ({
+  state,
+  onUpdateState,
+  onCompleteErasure,
+}) => {
+  const [profileDraft, setProfileDraft] = useState<PatientProfile>(state.profile);
+  const [profileMsg, setProfileMsg] = useState('');
+  const [voiceTestMsg, setVoiceTestMsg] = useState('');
+  const [tgFeedback, setTgFeedback] = useState('');
+  const [tgPayloadPreview, setTgPayloadPreview] = useState('');
+  const [exportFeedback, setExportFeedback] = useState('');
+  const [eraseArmed, setEraseArmed] = useState(false);
+  const eraseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    setProfileDraft(state.profile);
+  }, [state.profile]);
+
+  useEffect(() => {
+    return () => {
+      if (eraseTimerRef.current) clearTimeout(eraseTimerRef.current);
+    };
+  }, []);
+
+  const handleSaveProfile = () => {
+    onUpdateState((prev) => ({
+      ...prev,
+      profile: {
+        ...profileDraft,
+        preferredAddress: profileDraft.preferredAddress || 'আম্মুজি',
+        coughWeeks: Number(profileDraft.coughWeeks) || 0,
+      },
+    }));
+    setProfileMsg('প্রোফাইল সফলভাবে সংরক্ষিত হয়েছে');
   };
 
-  const handleSettingsChange = (field: keyof AppSettings, value: any) => {
-    const updated = { ...settings, [field]: value };
-    setSettings(updated);
-    saveSettings(updated);
+  const handleSetFontZoom = (zoom: number) => {
+    onUpdateState((prev) => ({
+      ...prev,
+      settings: { ...prev.settings, zoom },
+    }));
   };
 
-  const handleTestTelegram = async () => {
-    if (!settings.telegramToken || !settings.telegramChatId) {
-      setTelegramTest('❌ Telegram Token ও Chat ID দিন');
+  const handleToggleContrast = () => {
+    onUpdateState((prev) => ({
+      ...prev,
+      settings: { ...prev.settings, highContrast: !prev.settings.highContrast },
+    }));
+  };
+
+  const handleRateChange = (val: number) => {
+    const clamped = Math.max(0.7, Math.min(1.15, val));
+    onUpdateState((prev) => ({
+      ...prev,
+      settings: { ...prev.settings, ttsRate: clamped },
+    }));
+  };
+
+  const handleTestVoice = () => {
+    const addr = state.profile.preferredAddress || 'আম্মুজি';
+    const sample = `আসসালামু আলাইকুম ${addr}। আমি ডাঃ তোতা, আপনার কথা ধীরে ও স্পষ্টভাবে পড়ে শোনাচ্ছি।`;
+    if (state.settings.purdahMode) {
+      setVoiceTestMsg('নিরিবিলি মোড চালু থাকায় শব্দ বন্ধ আছে।');
       return;
     }
-    const success = await sendTelegramAlert(
-      settings.telegramToken,
-      settings.telegramChatId,
-      '✅ ডাঃ তোতা থেকে পরীক্ষামূলক বার্তা। সংযোগ সফল!'
+    speakText(sample, state.settings.ttsRate, false, false);
+    setVoiceTestMsg(`${state.settings.ttsRate}x বয়স্ক-বান্ধব গতিতে কণ্ঠ শোনানো হচ্ছে।`);
+  };
+
+  const handleTestTelegramPayload = async () => {
+    const updatedProfile = { ...state.profile, tgToken: profileDraft.tgToken, tgChatId: profileDraft.tgChatId };
+    onUpdateState((prev) => ({
+      ...prev,
+      profile: updatedProfile,
+    }));
+
+    const payload = buildTelegramPayload(updatedProfile);
+    setTgPayloadPreview(
+      `Telegram Bot Endpoint: api.telegram.org/bot<TOKEN>/sendMessage\nPayload JSON:\n${JSON.stringify(
+        payload,
+        null,
+        2
+      )}`
     );
-    setTelegramTest(success ? '✅ সফলভাবে পাঠানো হয়েছে!' : '❌ পাঠানো যায়নি। Token/Chat ID পরীক্ষা করুন।');
-    setTimeout(() => setTelegramTest(''), 5000);
+
+    if (profileDraft.tgToken.trim() && profileDraft.tgChatId.trim()) {
+      const ok = await sendTelegramAlert(
+        profileDraft.tgToken.trim(),
+        profileDraft.tgChatId.trim(),
+        `✅ <b>ডাঃ তোতা</b>: টেলিগ্রাম অ্যালার্ট সংযোগ সফলভাবে কাজ করছে।`
+      );
+      setTgFeedback(
+        ok
+          ? 'টেলিগ্রাম সেটিংস সংরক্ষিত ও পরীক্ষামূলক বার্তা পাঠানো হয়েছে!'
+          : 'সেটিংস সংরক্ষিত ও নমুনা পেলোড তৈরি হয়েছে (বার্তা পাঠাতে Token/Chat ID যাচাই করুন)'
+      );
+    } else {
+      setTgFeedback('টেলিগ্রাম সেটিংস সংরক্ষিত ও নমুনা পেলোড তৈরি হয়েছে');
+    }
   };
 
-  const handleWhatsAppReport = () => {
-    openWhatsAppReport(profile, getCoughLogs(), getMedications());
+  const summaryText = buildWhatsappSummaryText(state);
+  const whatsappUrl = buildWhatsappShareUrl(state);
+
+  const handleCopyDoctorSummary = async () => {
+    const ok = await copyTextToClipboard(summaryText);
+    setExportFeedback(
+      ok
+        ? 'হোয়াটসঅ্যাপ সারসংক্ষেপ ক্লিপবোর্ডে কপি হয়েছে'
+        : 'কপি করা যায়নি — অনুগ্রহ করে উপরের লেখা থেকে কপি করুন'
+    );
   };
 
-  const handleClearAll = () => {
-    clearAllData();
-    setProfile(getProfile());
-    setSettings(getSettings());
-    setShowClearConfirm(false);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 3000);
+  const handleDownloadTxt = () => {
+    triggerFileDownload(summaryText, 'dr-tota-cough-summary.txt', 'text/plain;charset=utf-8');
+    setExportFeedback('টেক্সট ফাইল ডাউনলোড শুরু হয়েছে');
   };
 
-  const dialectOptions = ['সহজ প্রমিত বাংলা', 'সিলেটি', 'চট্টগ্রামী', 'নোয়াখালী'];
-  const addressOptions = ['মা', 'খালা', 'আম্মা', 'আপা'];
+  const handleDownloadJson = () => {
+    triggerFileDownload(
+      JSON.stringify(state, null, 2),
+      'dr-tota-backup.json',
+      'application/json;charset=utf-8'
+    );
+    setExportFeedback('JSON ব্যাকআপ ডাউনলোড হয়েছে');
+  };
+
+  const handleJsonRestore = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const parsed = JSON.parse(String(ev.target?.result || '{}')) as Partial<DrTotaState>;
+        const restored = mergeState(DEFAULT_STATE, parsed);
+        onUpdateState(() => restored);
+        setExportFeedback('ব্যাকআপ সফলভাবে পুনরুদ্ধার করা হয়েছে');
+      } catch {
+        setExportFeedback('সঠিক JSON ব্যাকআপ ফাইল নির্বাচন করুন');
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const handleEraseClick = () => {
+    if (!eraseArmed) {
+      setEraseArmed(true);
+      if (eraseTimerRef.current) clearTimeout(eraseTimerRef.current);
+      eraseTimerRef.current = setTimeout(() => {
+        setEraseArmed(false);
+      }, 5000);
+      return;
+    }
+    setEraseArmed(false);
+    if (eraseTimerRef.current) clearTimeout(eraseTimerRef.current);
+    onCompleteErasure(false);
+  };
 
   return (
-    <div className="overflow-y-auto px-4 py-4 space-y-5">
-      {/* Profile Configuration */}
-      <section className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
-        <h3 className="text-base font-bold text-gray-800 mb-3 flex items-center gap-2">
-          <span>👤</span> রোগীর তথ্য
-        </h3>
-        <div className="space-y-3">
-          <div>
-            <label className="text-sm font-medium text-gray-600 block mb-1">রোগীর নাম:</label>
-            <input
-              type="text"
-              value={profile.name}
-              onChange={(e) => handleProfileChange('name', e.target.value)}
-              placeholder="নাম লিখুন"
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400"
-            />
-          </div>
-          <div>
-            <label className="text-sm font-medium text-gray-600 block mb-1">সম্বোধন:</label>
-            <div className="flex flex-wrap gap-2">
-              {addressOptions.map(opt => (
-                <button
-                  key={opt}
-                  onClick={() => handleProfileChange('preferredAddress', opt)}
-                  className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
-                    profile.preferredAddress === opt
-                      ? 'bg-emerald-500 text-white shadow'
-                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                  }`}
-                >
-                  {opt}
-                </button>
-              ))}
+    <section className="tab-panel" id="panel-settings" aria-labelledby="tab-btn-settings">
+      <div className="two-col-grid">
+        {/* 1. Clean Patient & Caregiver Profile */}
+        <div className="card">
+          <h2 className="section-heading">আম্মুজি ও পরিবারের প্রোফাইল</h2>
+          <p className="lede" style={{ marginBottom: 'var(--space-md)' }}>
+            কোনো কাল্পনিক তথ্য আগে থেকে দেওয়া নেই। পরিবারের সদস্য হিসেবে আম্মুজির প্রকৃত তথ্য এখানে লিখুন।
+          </p>
+
+          <div className="form-grid">
+            <div className="field-group">
+              <label className="field-label" htmlFor="cfg-mother-name">
+                মায়ের নাম
+              </label>
+              <input
+                type="text"
+                className="input-control"
+                id="cfg-mother-name"
+                value={profileDraft.motherName}
+                onChange={(e) =>
+                  setProfileDraft((p) => ({ ...p, motherName: e.target.value }))
+                }
+                placeholder="যেমন: সালেহা বেগম বা আম্মুজি"
+              />
+            </div>
+
+            <div className="field-group">
+              <label className="field-label" htmlFor="cfg-address">
+                ডাঃ তোতা কী বলে সম্বোধন করবে?
+              </label>
+              <select
+                className="select-control"
+                id="cfg-address"
+                value={profileDraft.preferredAddress}
+                onChange={(e) =>
+                  setProfileDraft((p) => ({ ...p, preferredAddress: e.target.value }))
+                }
+              >
+                {ADDRESS_OPTIONS.map((opt) => (
+                  <option key={opt} value={opt}>
+                    {opt}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="field-group">
+              <label className="field-label" htmlFor="cfg-dialect">
+                ভাষা ও আঞ্চলিক ধরন
+              </label>
+              <select
+                className="select-control"
+                id="cfg-dialect"
+                value={profileDraft.dialect}
+                onChange={(e) =>
+                  setProfileDraft((p) => ({ ...p, dialect: e.target.value }))
+                }
+              >
+                {DIALECT_OPTIONS.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="field-group">
+              <label className="field-label" htmlFor="cfg-cough-weeks">
+                কাশি শুরু হওয়ার সময়কাল (সপ্তাহ)
+              </label>
+              <input
+                type="number"
+                min={0}
+                max={150}
+                step={0.5}
+                className="input-control"
+                id="cfg-cough-weeks"
+                value={profileDraft.coughWeeks}
+                onChange={(e) =>
+                  setProfileDraft((p) => ({
+                    ...p,
+                    coughWeeks: parseFloat(e.target.value) || 0,
+                  }))
+                }
+              />
+            </div>
+
+            <div className="field-group">
+              <label className="field-label" htmlFor="cfg-conditions">
+                পূর্বের জানা শারীরিক অবস্থা বা অ্যালার্জি
+              </label>
+              <input
+                type="text"
+                className="input-control"
+                id="cfg-conditions"
+                value={profileDraft.conditions}
+                onChange={(e) =>
+                  setProfileDraft((p) => ({ ...p, conditions: e.target.value }))
+                }
+                placeholder="যেমন: উচ্চ রক্তচাপ, ডায়াবেটিস বা জানা নেই"
+              />
+            </div>
+
+            <div className="field-group">
+              <label className="field-label" htmlFor="cfg-caregiver-name">
+                দায়িত্বপ্রাপ্ত পরিবারের সদস্যের নাম
+              </label>
+              <input
+                type="text"
+                className="input-control"
+                id="cfg-caregiver-name"
+                value={profileDraft.caregiverName}
+                onChange={(e) =>
+                  setProfileDraft((p) => ({ ...p, caregiverName: e.target.value }))
+                }
+                placeholder="যেমন: ভাই সাজ্জাদ"
+              />
+            </div>
+
+            <div className="field-group">
+              <label className="field-label" htmlFor="cfg-caregiver-phone">
+                জরুরি মোবাইল নম্বর
+              </label>
+              <input
+                type="tel"
+                className="input-control"
+                id="cfg-caregiver-phone"
+                value={profileDraft.caregiverPhone}
+                onChange={(e) =>
+                  setProfileDraft((p) => ({ ...p, caregiverPhone: e.target.value }))
+                }
+                placeholder="যেমন: 017XXXXXXXX"
+              />
             </div>
           </div>
-          <div>
-            <label className="text-sm font-medium text-gray-600 block mb-1">উপভাষা:</label>
-            <select
-              value={profile.dialect}
-              onChange={(e) => handleProfileChange('dialect', e.target.value)}
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 bg-white"
-            >
-              {dialectOptions.map(d => (
-                <option key={d} value={d}>{d}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="text-sm font-medium text-gray-600 block mb-1">কাশি কত সপ্তাহ ধরে:</label>
-            <input
-              type="number"
-              min="0"
-              value={profile.coughWeeks}
-              onChange={(e) => handleProfileChange('coughWeeks', parseInt(e.target.value) || 0)}
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400"
-            />
-          </div>
-          <div>
-            <label className="text-sm font-medium text-gray-600 block mb-1">পরিচিত সমস্যা:</label>
-            <input
-              type="text"
-              value={profile.conditions}
-              onChange={(e) => handleProfileChange('conditions', e.target.value)}
-              placeholder="যেমন: প্রেশার, ডায়াবেটিস, গ্যাস্ট্রিক"
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400"
-            />
-          </div>
-        </div>
-      </section>
 
-      {/* Caregiver Info */}
-      <section className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
-        <h3 className="text-base font-bold text-gray-800 mb-3 flex items-center gap-2">
-          <span>👨‍👩‍👧</span> পরিচর্যাকারীর তথ্য
-        </h3>
-        <div className="space-y-3">
-          <div>
-            <label className="text-sm font-medium text-gray-600 block mb-1">পরিচর্যাকারীর নাম:</label>
-            <input
-              type="text"
-              value={profile.caregiverName}
-              onChange={(e) => handleProfileChange('caregiverName', e.target.value)}
-              placeholder="আপনার নাম"
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400"
-            />
-          </div>
-          <div>
-            <label className="text-sm font-medium text-gray-600 block mb-1">জরুরি ফোন নম্বর:</label>
-            <input
-              type="tel"
-              value={profile.caregiverPhone}
-              onChange={(e) => handleProfileChange('caregiverPhone', e.target.value)}
-              placeholder="01XXXXXXXXX"
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400"
-            />
-          </div>
-        </div>
-      </section>
-
-      {/* Telegram Integration */}
-      <section className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
-        <h3 className="text-base font-bold text-gray-800 mb-3 flex items-center gap-2">
-          <span>✈️</span> Telegram অ্যালার্ট
-        </h3>
-        <div className="space-y-3">
-          <div>
-            <label className="text-sm font-medium text-gray-600 block mb-1">Bot Token:</label>
-            <input
-              type="text"
-              value={settings.telegramToken}
-              onChange={(e) => handleSettingsChange('telegramToken', e.target.value)}
-              placeholder="123456:ABC-DEF..."
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 font-mono text-xs"
-            />
-          </div>
-          <div>
-            <label className="text-sm font-medium text-gray-600 block mb-1">Chat ID:</label>
-            <input
-              type="text"
-              value={settings.telegramChatId}
-              onChange={(e) => handleSettingsChange('telegramChatId', e.target.value)}
-              placeholder="-100123456789"
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 font-mono text-xs"
-            />
-          </div>
-          <button
-            onClick={handleTestTelegram}
-            className="w-full py-2.5 bg-blue-500 hover:bg-blue-600 text-white rounded-xl font-medium text-sm transition-colors"
+          <div
+            className="input-row-end"
+            style={{ marginTop: 'var(--space-md)', justifyContent: 'space-between' }}
           >
-            ✈️ টেস্ট Telegram অ্যালার্ট পাঠান
-          </button>
-          {telegramTest && (
-            <p className="text-sm text-center font-medium">{telegramTest}</p>
-          )}
+            <button type="button" className="btn btn-primary" onClick={handleSaveProfile}>
+              প্রোফাইল সংরক্ষণ করুন
+            </button>
+            <span className="inline-feedback" id="profile-save-msg">
+              {profileMsg}
+            </span>
+          </div>
         </div>
-      </section>
 
-      {/* WhatsApp Report */}
-      <section className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
-        <h3 className="text-base font-bold text-gray-800 mb-3 flex items-center gap-2">
-          <span>💬</span> WhatsApp রিপোর্ট
-        </h3>
-        <p className="text-xs text-gray-500 mb-3">
-          কাশির লগ, ওষুধ তালিকা ও রোগীর তথ্য সহ একটি সম্পূর্ণ রিপোর্ট WhatsApp-এ পাঠান।
-        </p>
-        <button
-          onClick={handleWhatsAppReport}
-          className="w-full py-3 bg-green-500 hover:bg-green-600 text-white rounded-xl font-bold text-sm transition-colors shadow-md"
-        >
-          💬 সরাসরি WhatsApp-এ রিপোর্ট পাঠান
-        </button>
-      </section>
+        {/* 2. Accessibility & Voice Tuning */}
+        <div className="card">
+          <h2 className="section-heading">অ্যাক্সেসিবিলিটি ও বয়স্ক-বান্ধব কণ্ঠ</h2>
+          <p className="lede" style={{ marginBottom: 'var(--space-md)' }}>
+            আম্মুজির দৃষ্টিশক্তি ও শ্রবণশক্তির সুবিধার্থে লেখার আকার, উচ্চ কনট্রাস্ট এবং কণ্ঠের গতি নিয়ন্ত্রণ করুন।
+          </p>
 
-      {/* Accessibility & Speech Controls */}
-      <section className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
-        <h3 className="text-base font-bold text-gray-800 mb-3 flex items-center gap-2">
-          <span>♿</span> অ্যাক্সেসিবিলিটি ও স্পিচ
-        </h3>
-        <div className="space-y-4">
-          {/* Font Size */}
-          <div>
-            <label className="text-sm font-medium text-gray-600 block mb-2">ফন্ট সাইজ:</label>
-            <div className="flex gap-2">
+          <div style={{ marginBottom: 'var(--space-md)' }}>
+            <span className="field-label" style={{ display: 'block', marginBottom: 'var(--space-xs)' }}>
+              অক্ষরের আকার (Font Zoom)
+            </span>
+            <div className="header-actions">
               {[
-                { label: 'সাধারণ (1.0x)', value: 1.0 },
-                { label: 'বড় (1.15x)', value: 1.15 },
-                { label: 'আরও বড় (1.3x)', value: 1.3 },
-              ].map(opt => (
+                { label: '১.০x (স্বাভাবিক)', val: 1 },
+                { label: '১.১৫x (বড়)', val: 1.15 },
+                { label: '১.৩০x (আরও বড়)', val: 1.3 },
+              ].map((opt) => (
                 <button
-                  key={opt.value}
-                  onClick={() => handleSettingsChange('fontSize', opt.value)}
-                  className={`flex-1 py-2 rounded-xl text-xs font-medium transition-all ${
-                    settings.fontSize === opt.value
-                      ? 'bg-emerald-500 text-white shadow'
-                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  key={opt.val}
+                  type="button"
+                  className={`btn btn-sm ${
+                    Number(state.settings.zoom) === opt.val ? 'btn-primary' : 'btn-outline'
                   }`}
+                  onClick={() => handleSetFontZoom(opt.val)}
                 >
                   {opt.label}
                 </button>
@@ -235,136 +368,253 @@ const Settings: React.FC = () => {
             </div>
           </div>
 
-          {/* Speech Speed */}
-          <div>
-            <label className="text-sm font-medium text-gray-600 block mb-1">
-              কথা বলার গতি: {settings.speechRate.toFixed(2)}x
-              {settings.speechRate <= 0.9 && <span className="text-emerald-600 ml-1">(বয়স্কদের জন্য উপযুক্ত)</span>}
+          <div style={{ marginBottom: 'var(--space-md)' }}>
+            <span className="field-label" style={{ display: 'block', marginBottom: 'var(--space-xs)' }}>
+              দৃষ্টি-সহায়ক কনট্রাস্ট মোড
+            </span>
+            <button
+              type="button"
+              className="btn btn-soft"
+              id="btn-contrast-toggle"
+              onClick={handleToggleContrast}
+            >
+              {state.settings.highContrast
+                ? 'উচ্চ কনট্রাস্ট মোড: চালু'
+                : 'উচ্চ কনট্রাস্ট মোড: বন্ধ'}
+            </button>
+          </div>
+
+          <div className="form-grid">
+            <div className="field-group">
+              <label className="field-label" htmlFor="slider-tts-rate">
+                বাংলা কণ্ঠের গতি (আদর্শ: ০.৮৮x)
+              </label>
+              <input
+                type="range"
+                min={0.7}
+                max={1.15}
+                step={0.02}
+                id="slider-tts-rate"
+                value={state.settings.ttsRate}
+                onChange={(e) => handleRateChange(parseFloat(e.target.value) || 0.88)}
+                style={{ width: '100%', accentColor: 'var(--primary)', minHeight: '44px' }}
+              />
+            </div>
+
+            <div className="field-group">
+              <label className="field-label" htmlFor="input-tts-rate">
+                গতির মান
+              </label>
+              <input
+                type="number"
+                min={0.7}
+                max={1.15}
+                step={0.02}
+                className="input-control"
+                id="input-tts-rate"
+                value={state.settings.ttsRate}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value);
+                  if (!Number.isNaN(v)) handleRateChange(v);
+                }}
+              />
+            </div>
+          </div>
+
+          <div
+            className="input-row-end"
+            style={{ marginTop: 'var(--space-md)', justifyContent: 'space-between' }}
+          >
+            <button type="button" className="btn btn-outline" onClick={handleTestVoice}>
+              কণ্ঠ পরীক্ষা করে শুনুন
+            </button>
+            <span className="inline-feedback" id="voice-test-msg">
+              {voiceTestMsg}
+            </span>
+          </div>
+        </div>
+
+        {/* 3. Caregiver Alerts & Telegram Bot Webhook Config */}
+        <div className="card">
+          <h2 className="section-heading">জরুরি সতর্কতা ও টেলিগ্রাম বট সেটআপ</h2>
+          <p className="lede" style={{ marginBottom: 'var(--space-md)' }}>
+            রেড-ফ্ল্যাগ (টিয়ার-০) বা ২৪ ঘণ্টার সতর্কতা (টিয়ার-১) ধরা পড়লে টেলিগ্রাম ওয়েব-হুক পেলোড তৈরি ও পরিবার অ্যালার্ট নথিভুক্ত হবে।
+          </p>
+
+          <div className="form-grid">
+            <div className="field-group">
+              <label className="field-label" htmlFor="cfg-tg-token">
+                Telegram Bot Token (ঐচ্ছিক)
+              </label>
+              <input
+                type="password"
+                className="input-control"
+                id="cfg-tg-token"
+                value={profileDraft.tgToken}
+                onChange={(e) =>
+                  setProfileDraft((p) => ({ ...p, tgToken: e.target.value }))
+                }
+                placeholder="যেমন: 123456:ABC-DEF..."
+              />
+            </div>
+
+            <div className="field-group">
+              <label className="field-label" htmlFor="cfg-tg-chatid">
+                Caregiver Chat ID
+              </label>
+              <input
+                type="text"
+                className="input-control"
+                id="cfg-tg-chatid"
+                value={profileDraft.tgChatId}
+                onChange={(e) =>
+                  setProfileDraft((p) => ({ ...p, tgChatId: e.target.value }))
+                }
+                placeholder="যেমন: 987654321"
+              />
+            </div>
+          </div>
+
+          <div
+            className="input-row-end"
+            style={{ marginTop: 'var(--space-md)', justifyContent: 'space-between' }}
+          >
+            <button
+              type="button"
+              className="btn btn-outline"
+              onClick={handleTestTelegramPayload}
+            >
+              টেলিগ্রাম সেটিংস সংরক্ষণ ও নমুনা পেলোড দেখুন
+            </button>
+            <span className="inline-feedback" id="tg-feedback">
+              {tgFeedback}
+            </span>
+          </div>
+
+          {tgPayloadPreview && (
+            <pre
+              className="code-preview"
+              id="tg-payload-preview"
+              style={{ marginTop: 'var(--space-sm)' }}
+            >
+              {tgPayloadPreview}
+            </pre>
+          )}
+
+          <h3 className="subhead" style={{ marginTop: 'var(--space-lg)' }}>
+            পরিবার সতর্কবার্তা লগ
+          </h3>
+          <div className="list-stack" id="caregiver-alerts-list">
+            {state.alerts.length === 0 ? (
+              <div className="empty-state">
+                <strong>কোনো জরুরি সতর্কবার্তা তৈরি হয়নি</strong>
+                <span>
+                  ভয়েস বা ডায়েরিতে কোনো লাল-সংকেত ধরা পড়লে এখানে তারিখ ও কারণ নথিভুক্ত হবে।
+                </span>
+              </div>
+            ) : (
+              state.alerts.slice(0, 10).map((a) => (
+                <div
+                  key={a.id}
+                  className="status-card"
+                  data-status={a.level.includes('T0') ? 'alert' : 'warn'}
+                >
+                  <div className="brand-title-row" style={{ justifyContent: 'space-between' }}>
+                    <strong>
+                      {a.level}: {a.reason}
+                    </strong>
+                    <span className="kpi-caption">{a.time}</span>
+                  </div>
+                  <div className="kpi-caption">উদ্ধৃতি: &quot;{a.quote}&quot;</div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* 4. One-Tap WhatsApp Summary Exporter & PDPA 2026 Controls */}
+        <div className="card">
+          <h2 className="section-heading">ডাক্তার ও হোয়াটসঅ্যাপ সারসংক্ষেপ ও PDPA ২০২৬</h2>
+          <p className="lede" style={{ marginBottom: 'var(--space-md)' }}>
+            কাশির ডায়েরি, ওষুধের তালিকা এবং এনটিপি টিবি/এক্স-রে চেকলিস্ট এক ক্লিকে কপি বা ডাউনলোড করে হোয়াটসঅ্যাপে পাঠান।
+          </p>
+
+          <pre className="code-preview" id="whatsapp-summary-preview">
+            {summaryText}
+          </pre>
+
+          <div className="header-actions" style={{ marginTop: 'var(--space-md)' }}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={handleCopyDoctorSummary}
+            >
+              হোয়াটসঅ্যাপ সারসংক্ষেপ কপি করুন
+            </button>
+            <a
+              href={whatsappUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn btn-outline"
+            >
+              WhatsApp-এ খুলুন
+            </a>
+            <button type="button" className="btn btn-outline" onClick={handleDownloadTxt}>
+              টেক্সট ডাউনলোড (.txt)
+            </button>
+            <button type="button" className="btn btn-soft btn-sm" onClick={handleDownloadJson}>
+              JSON ব্যাকআপ
+            </button>
+          </div>
+
+          {exportFeedback && (
+            <span
+              className="inline-feedback"
+              id="export-feedback"
+              style={{ display: 'block', marginTop: 'var(--space-xs)' }}
+            >
+              {exportFeedback}
+            </span>
+          )}
+
+          <div className="field-group" style={{ marginTop: 'var(--space-md)' }}>
+            <label className="field-label" htmlFor="json-restore-input">
+              ব্যাকআপ JSON ফাইল থেকে তথ্য পুনরুদ্ধার
             </label>
             <input
-              type="range"
-              min="0.72"
-              max="1.15"
-              step="0.02"
-              value={settings.speechRate}
-              onChange={(e) => handleSettingsChange('speechRate', parseFloat(e.target.value))}
-              className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+              type="file"
+              accept=".json"
+              className="input-control"
+              id="json-restore-input"
+              onChange={handleJsonRestore}
             />
-            <div className="flex justify-between text-xs text-gray-400 mt-1">
-              <span>🐢 ০.৭২x (ধীর)</span>
-              <span>১.১৫x (দ্রুত) 🐇</span>
-            </div>
           </div>
 
-          {/* Toggles */}
-          <div className="space-y-2">
-            <label className="flex items-center justify-between p-3 bg-gray-50 rounded-xl cursor-pointer">
-              <span className="text-sm text-gray-700">🔲 হাই কন্ট্রাস্ট মোড</span>
-              <input
-                type="checkbox"
-                checked={settings.highContrast}
-                onChange={(e) => handleSettingsChange('highContrast', e.target.checked)}
-                className="w-5 h-5 accent-emerald-500"
-              />
-            </label>
-            <label className="flex items-center justify-between p-3 bg-gray-50 rounded-xl cursor-pointer">
-              <span className="text-sm text-gray-700">🔊 অটো পড়ে শোনানো</span>
-              <input
-                type="checkbox"
-                checked={settings.autoReadAloud}
-                onChange={(e) => handleSettingsChange('autoReadAloud', e.target.checked)}
-                className="w-5 h-5 accent-emerald-500"
-              />
-            </label>
-          </div>
-        </div>
-      </section>
-
-      {/* Emergency Contacts */}
-      <section className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
-        <h3 className="text-base font-bold text-gray-800 mb-3 flex items-center gap-2">
-          <span>📞</span> জরুরি হেল্পলাইন
-        </h3>
-        <div className="grid grid-cols-2 gap-2">
-          <a href="tel:999" className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-xl hover:bg-red-100 transition-colors">
-            <span className="text-xl">🚨</span>
-            <div>
-              <p className="text-sm font-bold text-red-700">৯৯৯</p>
-              <p className="text-xs text-red-600">জাতীয় জরুরি</p>
-            </div>
-          </a>
-          <a href="tel:16263" className="flex items-center gap-2 p-3 bg-blue-50 border border-blue-200 rounded-xl hover:bg-blue-100 transition-colors">
-            <span className="text-xl">🏥</span>
-            <div>
-              <p className="text-sm font-bold text-blue-700">১৬২৬৩</p>
-              <p className="text-xs text-blue-600">শাস্থ্য বাতায়ন</p>
-            </div>
-          </a>
-          <a href="tel:106" className="flex items-center gap-2 p-3 bg-amber-50 border border-amber-200 rounded-xl hover:bg-amber-100 transition-colors">
-            <span className="text-xl">🚑</span>
-            <div>
-              <p className="text-sm font-bold text-amber-700">১০৬</p>
-              <p className="text-xs text-amber-600">ACC এম্বুলেন্স</p>
-            </div>
-          </a>
-          <a href="tel:109" className="flex items-center gap-2 p-3 bg-purple-50 border border-purple-200 rounded-xl hover:bg-purple-100 transition-colors">
-            <span className="text-xl">👩‍👧</span>
-            <div>
-              <p className="text-sm font-bold text-purple-700">১০৯</p>
-              <p className="text-xs text-purple-600">নারী ও শিশু</p>
-            </div>
-          </a>
-        </div>
-      </section>
-
-      {/* PDPA Data Erasure */}
-      <section className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
-        <h3 className="text-base font-bold text-gray-800 mb-3 flex items-center gap-2">
-          <span>🔒</span> গোপনীয়তা ও তথ্য মুছুন
-        </h3>
-        <p className="text-xs text-gray-500 mb-3">
-          PDPA 2026 অনুযায়ী আপনার সব ভয়েস ডেটা, কথোপকথন ও কাশির লগ মুছে ফেলুন।
-        </p>
-        {!showClearConfirm ? (
-          <button
-            onClick={() => setShowClearConfirm(true)}
-            className="w-full py-3 bg-red-500 hover:bg-red-600 text-white rounded-xl font-bold text-sm transition-colors"
-          >
-            🗑️ আজকের সব কথোপকথন ও লগ মুছে ফেলুন
-          </button>
-        ) : (
-          <div className="bg-red-50 border border-red-200 rounded-xl p-4">
-            <p className="text-sm text-red-700 font-medium mb-3">
-              ⚠️ আপনি কি নিশ্চিত? সব ডেটা স্থায়ীভাবে মুছে যাবে!
+          <div className="status-card" data-status="alert" style={{ marginTop: 'var(--space-lg)' }}>
+            <strong
+              className="subhead"
+              style={{ marginBottom: 'var(--space-xs)', color: 'var(--error)' }}
+            >
+              PDPA ২০২৬ তথ্য সুরক্ষা ও সম্পূর্ণ মুছে ফেলা
+            </strong>
+            <p className="lede" style={{ marginBottom: 'var(--space-sm)' }}>
+              বাংলাদেশ ব্যক্তিগত তথ্য সুরক্ষা আইন (PDPA ২০২৬) অনুযায়ী আম্মুজির কথোপকথন, কাশির ডায়েরি ও ওষুধের তথ্য সম্পূর্ণ পরিবারের নিয়ন্ত্রণে থাকে। ভয়েসে{' '}
+              <strong>“সব তথ্য মুছে ফেলো”</strong> বললে অথবা নিচের বোতামে দুইবার চাপলে সব সংরক্ষিত তথ্য তাৎক্ষণিক মুছে যাবে।
             </p>
-            <div className="flex gap-2">
-              <button
-                onClick={handleClearAll}
-                className="flex-1 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl font-medium text-sm"
-              >
-                হ্যাঁ, সব মুছুন
-              </button>
-              <button
-                onClick={() => setShowClearConfirm(false)}
-                className="flex-1 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-xl font-medium text-sm"
-              >
-                না, রাখুন
-              </button>
-            </div>
+            <button
+              type="button"
+              className="btn btn-emergency btn-sm"
+              id="btn-erase-all"
+              onClick={handleEraseClick}
+            >
+              {eraseArmed
+                ? 'নিশ্চিত করতে আরেকবার চাপুন (সব মুছে যাবে)'
+                : 'সব তথ্য মুছে ফেলুন (PDPA ২০২৬)'}
+            </button>
           </div>
-        )}
-        {saved && (
-          <p className="text-sm text-emerald-600 font-medium text-center mt-2">✅ সব তথ্য মুছে ফেলা হয়েছে।</p>
-        )}
-      </section>
-
-      {/* Footer Disclaimer */}
-      <div className="text-center py-4">
-        <p className="text-xs text-gray-400">
-          🦜 ডাঃ তোতা v1.0 • একটি এআই সহকারী, আসল ডাক্তার নয়
-        </p>
+        </div>
       </div>
-    </div>
+    </section>
   );
 };
 

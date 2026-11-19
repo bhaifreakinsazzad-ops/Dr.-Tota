@@ -1,103 +1,166 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Mic, CheckSquare, Users } from 'lucide-react';
 import Header from './components/Header';
 import VoiceChat from './components/VoiceChat';
 import CoughTracker from './components/CoughTracker';
 import Settings from './components/Settings';
 import EmergencyModal from './components/EmergencyModal';
-import { getSettings, saveSettings } from './utils/storage';
+import {
+  type DrTotaState,
+  DEFAULT_STATE,
+  loadAppState,
+  saveAppState,
+  clearAllData,
+  createGreetingMessage,
+  formatNowBn,
+} from './utils/storage';
+import { stopSpeaking } from './utils/speech';
 
-type TabId = 'chat' | 'cough' | 'settings';
+type TabId = 'voice' | 'tracker' | 'settings';
 
 const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<TabId>('chat');
-  const [purdahMode, setPurdahMode] = useState(false);
-  const [emergencyOpen, setEmergencyOpen] = useState(false);
-  const [emergencyScript, setEmergencyScript] = useState('');
-  const [fontSize, setFontSize] = useState(1.0);
-  const [highContrast, setHighContrast] = useState(false);
+  const [state, setState] = useState<DrTotaState>(() => loadAppState());
+  const [activeTab, setActiveTab] = useState<TabId>('voice');
+  const [syncStatus, setSyncStatus] = useState<string>('সংরক্ষিত ও প্রস্তুত');
+  const [emergencyOpen, setEmergencyOpen] = useState<boolean>(false);
+  const [emergencyReason, setEmergencyReason] = useState<string>('manual');
 
+  // Sync zoom & high-contrast CSS tokens to document root
   useEffect(() => {
-    const settings = getSettings();
-    setPurdahMode(settings.purdahMode);
-    setFontSize(settings.fontSize);
-    setHighContrast(settings.highContrast);
-  }, [activeTab]);
+    document.documentElement.style.setProperty('--zoom', String(state.settings.zoom || 1));
+  }, [state.settings.zoom]);
 
-  // Refresh settings when switching tabs
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const settings = getSettings();
-      setFontSize(settings.fontSize);
-      setHighContrast(settings.highContrast);
-      setPurdahMode(settings.purdahMode);
-    }, 2000);
-    return () => clearInterval(interval);
-  }, []);
+  const handleUpdateState = useCallback(
+    (updater: (prev: DrTotaState) => DrTotaState) => {
+      setState((prev) => {
+        const next = updater(prev);
+        setSyncStatus('সংরক্ষণ হচ্ছে…');
+        const saved = saveAppState(next);
+        setSyncStatus(saved ? 'সংরক্ষিত' : 'স্থানীয় সেশন');
+        return next;
+      });
+    },
+    []
+  );
 
-  const handleEmergency = (script: string) => {
-    setEmergencyScript(script);
+  const handleTogglePurdah = () => {
+    handleUpdateState((prev) => {
+      const nextPurdah = !prev.settings.purdahMode;
+      if (nextPurdah) stopSpeaking();
+      return {
+        ...prev,
+        settings: { ...prev.settings, purdahMode: nextPurdah },
+      };
+    });
+  };
+
+  const handleOpenEmergency = (reason: string) => {
+    setEmergencyReason(reason);
     setEmergencyOpen(true);
   };
 
-  const tabs: { id: TabId; label: string; emoji: string }[] = [
-    { id: 'chat', label: 'কথা বলুন', emoji: '🎙️' },
-    { id: 'cough', label: 'কাশি ও ওষুধ', emoji: '🫁' },
-    { id: 'settings', label: 'পরিবার ও সেটিংস', emoji: '👨‍👩‍👧' },
-  ];
+  const handleCompleteErasure = useCallback((fromVoice: boolean) => {
+    stopSpeaking();
+    clearAllData();
+    const fresh = structuredClone(DEFAULT_STATE);
+    fresh.messages = [
+      createGreetingMessage(fresh.profile.preferredAddress),
+      {
+        id: `msg_${Date.now() + 2}`,
+        sender: 'bot',
+        tier: 'INFO',
+        text: fromVoice
+          ? 'PDPA ২০২৬ অনুযায়ী আপনার পূর্বের সব কথোপকথন, কাশির ডায়েরি এবং ওষুধের তথ্য সম্পূর্ণ মুছে ফেলা হয়েছে।'
+          : 'সব ব্যক্তিগত স্বাস্থ্য তথ্য সফলভাবে মুছে ফেলা হয়েছে।',
+        simpleText: 'সব তথ্য মুছে ফেলা হয়েছে।',
+        simplified: false,
+        timestamp: formatNowBn(),
+      },
+    ];
+    saveAppState(fresh);
+    setState(fresh);
+    setSyncStatus('সংরক্ষিত');
+  }, []);
+
+  const motherLabel = state.profile.motherName || state.profile.preferredAddress || 'আম্মুজি';
 
   return (
     <div
-      className={`min-h-screen flex flex-col ${highContrast ? 'bg-black text-white' : 'bg-gray-50 text-gray-900'}`}
-      style={{ fontSize: `${fontSize}rem` }}
+      className="app-shell"
+      id="app-root"
+      data-contrast={state.settings.highContrast ? 'high' : 'normal'}
     >
-      <div className="sticky top-0 z-40">
+      <div className="page-grid">
         <Header
-          purdahMode={purdahMode}
-          onTogglePurdah={() => {
-            const settings = getSettings();
-            settings.purdahMode = !settings.purdahMode;
-            saveSettings(settings);
-            setPurdahMode(!purdahMode);
-          }}
-          onEmergency={() => {
-            setEmergencyScript('শুনুন, এটা খুব জরুরি। এখনই ৯৯৯ নম্বরে কল করুন অথবা পাশের কাউকে ডাকুন।');
-            setEmergencyOpen(true);
-          }}
+          purdahMode={state.settings.purdahMode}
+          syncStatus={syncStatus}
+          onTogglePurdah={handleTogglePurdah}
+          onEmergency={() => handleOpenEmergency('manual')}
         />
 
-        {/* Tab Navigation */}
-        <nav className={`${highContrast ? 'bg-gray-900 border-gray-700' : 'bg-white border-gray-200'} border-b shadow-sm`}>
-          <div className="max-w-4xl mx-auto flex">
-            {tabs.map(tab => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`flex-1 py-3 px-2 text-center text-xs font-medium transition-all border-b-2 ${
-                  activeTab === tab.id
-                    ? 'border-emerald-500 text-emerald-700 bg-emerald-50'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'
-                }`}
-              >
-                <span className="block text-lg mb-0.5">{tab.emoji}</span>
-                <span className="leading-tight">{tab.label}</span>
-              </button>
-            ))}
-          </div>
+        {/* Two-Sided Interface Mode Switcher */}
+        <nav className="mode-nav" aria-label="প্রধান বিভাগসমূহ">
+          <button
+            type="button"
+            className="mode-tab"
+            id="tab-btn-voice"
+            aria-selected={activeTab === 'voice'}
+            onClick={() => setActiveTab('voice')}
+          >
+            <Mic size={20} aria-hidden="true" />
+            কথা বলুন (আম্মুজি)
+          </button>
+
+          <button
+            type="button"
+            className="mode-tab"
+            id="tab-btn-tracker"
+            aria-selected={activeTab === 'tracker'}
+            onClick={() => setActiveTab('tracker')}
+          >
+            <CheckSquare size={20} aria-hidden="true" />
+            কাশি ও ওষুধ
+          </button>
+
+          <button
+            type="button"
+            className="mode-tab"
+            id="tab-btn-settings"
+            aria-selected={activeTab === 'settings'}
+            onClick={() => setActiveTab('settings')}
+          >
+            <Users size={20} aria-hidden="true" />
+            পরিবার ও সেটিংস
+          </button>
         </nav>
+
+        {activeTab === 'voice' && (
+          <VoiceChat
+            state={state}
+            onUpdateState={handleUpdateState}
+            onEmergency={handleOpenEmergency}
+            onCompleteErasure={handleCompleteErasure}
+          />
+        )}
+
+        {activeTab === 'tracker' && (
+          <CoughTracker state={state} onUpdateState={handleUpdateState} />
+        )}
+
+        {activeTab === 'settings' && (
+          <Settings
+            state={state}
+            onUpdateState={handleUpdateState}
+            onCompleteErasure={handleCompleteErasure}
+          />
+        )}
       </div>
 
-      {/* Main Content Area */}
-      <main className="flex-1 max-w-4xl mx-auto w-full flex flex-col" style={{ minHeight: 'calc(100vh - 140px)' }}>
-        {activeTab === 'chat' && <VoiceChat onEmergency={handleEmergency} />}
-        {activeTab === 'cough' && <CoughTracker />}
-        {activeTab === 'settings' && <Settings />}
-      </main>
-
-      {/* Emergency Modal */}
       <EmergencyModal
         isOpen={emergencyOpen}
+        reason={emergencyReason}
+        motherLabel={motherLabel}
         onClose={() => setEmergencyOpen(false)}
-        emergencyScript={emergencyScript}
       />
     </div>
   );
