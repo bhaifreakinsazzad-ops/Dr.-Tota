@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
   ResponsiveContainer,
   LineChart,
@@ -10,7 +11,17 @@ import {
   CartesianGrid,
   Tooltip,
 } from 'recharts';
-import { Camera, Loader2, Activity, PlusCircle, CheckCircle2, ScanLine } from 'lucide-react';
+import {
+  Camera,
+  Loader2,
+  Activity,
+  PlusCircle,
+  CheckCircle2,
+  ScanLine,
+  Printer,
+  FileText,
+  X,
+} from 'lucide-react';
 import { PredictiveArcCanvas, DiagnosticsPanel } from '@designcodeio/threeui';
 import { animate, stagger } from 'animejs';
 import { motion, AnimatePresence } from 'motion/react';
@@ -98,10 +109,36 @@ const CoughTracker: React.FC<CoughTrackerProps> = ({ state, onUpdateState, onEme
   const [scannedMeds, setScannedMeds] = useState<ScannedMed[]>([]);
   const [scanDoctorNotes, setScanDoctorNotes] = useState('');
   const [scanWarnings, setScanWarnings] = useState<string[]>([]);
+  const [showPdfPreview, setShowPdfPreview] = useState(false);
+  const [pdfFeedback, setPdfFeedback] = useState('');
+  const [reportGeneratedAt, setReportGeneratedAt] = useState<Date>(() => new Date());
+  const printCleanupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     setCoughWeeks(Number(state.profile.coughWeeks) || 0);
   }, [state.profile.coughWeeks]);
+
+  useEffect(() => {
+    if (!showPdfPreview) return;
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') {
+        setShowPdfPreview(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [showPdfPreview]);
+
+  useEffect(() => {
+    return () => {
+      if (printCleanupTimerRef.current) {
+        clearTimeout(printCleanupTimerRef.current);
+      }
+      if (document.body.dataset.printTarget === 'clinical-summary') {
+        delete document.body.dataset.printTarget;
+      }
+    };
+  }, []);
 
   // Anime.js v4 staggered KPI entrance + numeric roll-up
   useEffect(() => {
@@ -615,6 +652,374 @@ const CoughTracker: React.FC<CoughTrackerProps> = ({ state, onUpdateState, onEme
 
   const weeklyLogTotal = weeklyChartData.reduce((sum, d) => sum + d.count, 0);
 
+  // Generates a formatted, physician-ready printable PDF summary of collected health data
+  const generatePrintablePdfSummary = useCallback((mode: 'print' | 'preview' = 'print') => {
+    const now = new Date();
+    setReportGeneratedAt(now);
+
+    if (mode === 'preview') {
+      setShowPdfPreview(true);
+      return;
+    }
+
+    if (printCleanupTimerRef.current) {
+      clearTimeout(printCleanupTimerRef.current);
+    }
+
+    document.body.dataset.printTarget = 'clinical-summary';
+    setPdfFeedback(
+      'চিকিৎসকের জন্য প্রিন্টেবল PDF রিপোর্ট প্রস্তুত — প্রিন্ট ডায়ালগ থেকে "Save as PDF" নির্বাচন করুন'
+    );
+
+    const clearPrintFlag = () => {
+      if (document.body.dataset.printTarget === 'clinical-summary') {
+        delete document.body.dataset.printTarget;
+      }
+      window.removeEventListener('afterprint', clearPrintFlag);
+    };
+
+    window.addEventListener('afterprint', clearPrintFlag, { once: true });
+    printCleanupTimerRef.current = setTimeout(clearPrintFlag, 45000);
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        window.print();
+      });
+    });
+  }, []);
+
+  const renderClinicalSummarySheet = () => {
+    const patientDisplay =
+      state.profile.motherName.trim() || state.profile.preferredAddress || 'রোগী (নাম অলিখিত)';
+    const aceMeds = state.medications.filter((m) => m.coughRisk === 'HIGH');
+    const generatedTimeEn = reportGeneratedAt.toLocaleString('en-GB', {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    });
+    const reportRefId = `DT-${reportGeneratedAt.getFullYear()}${String(
+      reportGeneratedAt.getMonth() + 1
+    ).padStart(2, '0')}${String(reportGeneratedAt.getDate()).padStart(2, '0')}`;
+
+    const riskBadgeInfo = (risk: Medication['coughRisk']) => {
+      if (risk === 'HIGH') return { level: 'high', label: 'HIGH · ACE-I Cough Risk' };
+      if (risk === 'MODERATE') return { level: 'warn', label: 'MODERATE · Monitor' };
+      if (risk === 'LOW') return { level: 'ok', label: 'LOW · Unlikely' };
+      return { level: 'info', label: 'UNVERIFIED' };
+    };
+
+    const tierBadgeLevel = (tier: CoughLog['tier']) => {
+      if (tier === 'T0' || tier === 'T1') return 'high';
+      if (tier === 'T2') return 'warn';
+      return 'ok';
+    };
+
+    return (
+      <article className="clinical-report-sheet" aria-label="Medical Professional Clinical Summary">
+        <header className="clinical-report-header">
+          <div>
+            <h2 className="clinical-report-title">
+              Clinical Cough &amp; Medication Summary · রোগীর কাশি ও ওষুধের সারসংক্ষেপ
+            </h2>
+            <p className="clinical-report-subtitle">
+              Dr. Tota Pre-Consultation Health Record (Formatted for Physician Review)
+            </p>
+          </div>
+          <div className="clinical-report-meta">
+            <div>
+              <strong>Report ID:</strong> {reportRefId}
+            </div>
+            <div>
+              <strong>Generated:</strong> {generatedTimeEn}
+            </div>
+            <div>
+              <strong>Records:</strong> {state.coughLogs.length} Cough Logs ·{' '}
+              {state.medications.length} Meds · {state.vitalsLogs.length} Vitals
+            </div>
+          </div>
+        </header>
+
+        {/* Patient Baseline & Triage Snapshot */}
+        <div className="clinical-report-grid">
+          <div className="clinical-kv-box">
+            <div className="clinical-kv-label">Patient / রোগী</div>
+            <div className="clinical-kv-value">{patientDisplay}</div>
+            <div style={{ fontSize: '11px', color: '#475569', marginTop: '2px' }}>
+              Conditions: {state.profile.conditions.trim() || 'None documented'}
+            </div>
+          </div>
+          <div className="clinical-kv-box">
+            <div className="clinical-kv-label">Cough Duration / সময়কাল</div>
+            <div className="clinical-kv-value">{profileWeeks} Weeks ({profileWeeks} সপ্তাহ)</div>
+            <div style={{ fontSize: '11px', color: '#475569', marginTop: '2px' }}>
+              {profileWeeks >= 2 ? 'Meets NTP >=2 wk TB threshold' : 'Active monitoring'}
+            </div>
+          </div>
+          <div className="clinical-kv-box">
+            <div className="clinical-kv-label">Triage &amp; Adherence / স্তর</div>
+            <div className="clinical-kv-value">{latestTier}</div>
+            <div style={{ fontSize: '11px', color: '#475569', marginTop: '2px' }}>
+              Today&apos;s Meds Taken: {todayTaken}/{state.medications.length}
+            </div>
+          </div>
+          <div className="clinical-kv-box">
+            <div className="clinical-kv-label">Caregiver / অভিভাবক</div>
+            <div className="clinical-kv-value">
+              {state.profile.caregiverName.trim() || 'Family Caregiver'}
+            </div>
+            <div style={{ fontSize: '11px', color: '#475569', marginTop: '2px' }}>
+              Tel: {state.profile.caregiverPhone.trim() || 'Not provided'}
+            </div>
+          </div>
+        </div>
+
+        {/* Priority Clinical Alerts */}
+        {(profileWeeks >= 2 || aceMeds.length > 0 || state.alerts.length > 0) && (
+          <section className="clinical-report-section">
+            <h3 className="clinical-section-title">
+              Priority Clinical Flags &amp; Safety Alerts · অগ্রাধিকার সতর্কতা
+            </h3>
+            {profileWeeks >= 2 && (
+              <div className="clinical-alert-banner" data-severity="warn">
+                <strong>Bangladesh NTP TB Screening Flag (Duration &ge; 2 Weeks):</strong> Persistent
+                cough of {profileWeeks} weeks warrants 2x Sputum AFB / GeneXpert (MTB/RIF) and Chest
+                X-Ray evaluation.
+              </div>
+            )}
+            {aceMeds.length > 0 && (
+              <div className="clinical-alert-banner" data-severity="high">
+                <strong>Drug-Induced Cough Alert (ACE-Inhibitor):</strong> Patient medication list
+                includes{' '}
+                <strong>
+                  {aceMeds.map((m) => `${m.brandName} (${m.generic})`).join(', ')}
+                </strong>
+                . Consider evaluating for ACE-I induced dry cough / ARB substitution (patient
+                advised not to self-discontinue).
+              </div>
+            )}
+            {state.alerts.slice(0, 4).map((al) => (
+              <div
+                key={al.id}
+                className="clinical-alert-banner"
+                data-severity={al.level.includes('T0') ? 'high' : 'warn'}
+              >
+                <strong>
+                  [{al.level}] {al.reason}
+                </strong>{' '}
+                <span style={{ fontSize: '11.5px' }}>
+                  ({al.time}) — Note: &quot;{al.quote}&quot;
+                </span>
+              </div>
+            ))}
+          </section>
+        )}
+
+        {/* 6-Domain Differential Matrix */}
+        <section className="clinical-report-section">
+          <h3 className="clinical-section-title">
+            6-Domain Differential Screening Index · ৬-ডোমেইন স্ক্রিনিং সারসংক্ষেপ
+          </h3>
+          <div className="clinical-domain-matrix">
+            {sixDomains.map((d) => (
+              <div key={d.title} className="clinical-domain-cell" data-flagged={d.active}>
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    gap: '4px',
+                    marginBottom: '3px',
+                  }}
+                >
+                  <strong style={{ fontSize: '11.5px', color: '#0f172a' }}>{d.title}</strong>
+                  <span
+                    className="clinical-badge"
+                    data-level={d.active ? (d.status === 'alert' ? 'high' : 'warn') : 'ok'}
+                  >
+                    {d.active ? 'FLAGGED' : 'Clear'}
+                  </span>
+                </div>
+                <div style={{ fontSize: '11px', color: '#334155' }}>{d.desc}</div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* Current Medications Audit Table */}
+        <section className="clinical-report-section">
+          <h3 className="clinical-section-title">
+            Current Medications &amp; Cough-Risk Audit · চলমান ওষুধের তালিকা ({state.medications.length})
+          </h3>
+          {state.medications.length === 0 ? (
+            <div style={{ fontSize: '12px', color: '#475569', padding: '6px 0' }}>
+              No medications recorded in profile. / এখনো কোনো ওষুধ নথিভুক্ত হয়নি।
+            </div>
+          ) : (
+            <table className="clinical-table">
+              <thead>
+                <tr>
+                  <th>Brand Name</th>
+                  <th>Generic &amp; Class</th>
+                  <th>Schedule &amp; Dose</th>
+                  <th>Cough Risk</th>
+                  <th>Clinical Note</th>
+                </tr>
+              </thead>
+              <tbody>
+                {state.medications.map((med) => {
+                  const badge = riskBadgeInfo(med.coughRisk);
+                  return (
+                    <tr key={med.id}>
+                      <td>
+                        <strong>{med.brandName}</strong>
+                      </td>
+                      <td>
+                        {med.generic}
+                        <div style={{ fontSize: '11px', color: '#475569' }}>{med.cls}</div>
+                      </td>
+                      <td>
+                        {med.prayerTime}
+                        {med.dose ? (
+                          <div style={{ fontSize: '11px', color: '#475569' }}>{med.dose}</div>
+                        ) : null}
+                      </td>
+                      <td>
+                        <span className="clinical-badge" data-level={badge.level}>
+                          {badge.label}
+                        </span>
+                      </td>
+                      <td style={{ fontSize: '11px', color: '#334155' }}>{med.note}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </section>
+
+        {/* Chronological Cough & Respiratory History Table */}
+        <section className="clinical-report-section">
+          <h3 className="clinical-section-title">
+            Cough &amp; Respiratory History Log · কাশি ও শ্বাস-প্রশ্বাসের ইতিহাস ({state.coughLogs.length})
+          </h3>
+          {state.coughLogs.length === 0 ? (
+            <div style={{ fontSize: '12px', color: '#475569', padding: '6px 0' }}>
+              No cough diary entries recorded yet. / এখনো কোনো কাশির লগ নথিভুক্ত হয়নি।
+            </div>
+          ) : (
+            <table className="clinical-table">
+              <thead>
+                <tr>
+                  <th>Date / Time</th>
+                  <th>Cough Type / Measurement</th>
+                  <th>Severity / Rate</th>
+                  <th>Tier</th>
+                  <th>Flagged Domains &amp; Notes</th>
+                </tr>
+              </thead>
+              <tbody>
+                {state.coughLogs.map((log) => (
+                  <tr key={log.id}>
+                    <td style={{ whiteSpace: 'nowrap' }}>{log.date}</td>
+                    <td>
+                      <strong>{log.type}</strong>
+                      <div style={{ fontSize: '11px', color: '#475569' }}>
+                        Duration: {log.weeks} wks
+                      </div>
+                    </td>
+                    <td style={{ whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+                      {log.breathRate !== undefined
+                        ? `${log.breathRate} breaths/min`
+                        : `${log.severity}/10`}
+                    </td>
+                    <td>
+                      <span className="clinical-badge" data-level={tierBadgeLevel(log.tier)}>
+                        {log.tier}
+                      </span>
+                    </td>
+                    <td style={{ fontSize: '11px', color: '#334155' }}>
+                      {log.domains.length > 0 && (
+                        <div>
+                          <strong>Domains:</strong> {log.domains.join(', ')}
+                        </div>
+                      )}
+                      <div>{log.note}</div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+
+        {/* Vital Signs History Table */}
+        {state.vitalsLogs.length > 0 && (
+          <section className="clinical-report-section">
+            <h3 className="clinical-section-title">
+              Recorded Vital Signs · রক্তচাপ, অক্সিজেন (SpO2) ও তাপমাত্রা ({state.vitalsLogs.length})
+            </h3>
+            <table className="clinical-table">
+              <thead>
+                <tr>
+                  <th>Date / Time</th>
+                  <th>Blood Pressure</th>
+                  <th>SpO2</th>
+                  <th>Temp (°F)</th>
+                  <th>Blood Sugar</th>
+                </tr>
+              </thead>
+              <tbody>
+                {state.vitalsLogs.slice(0, 12).map((v) => (
+                  <tr key={v.id}>
+                    <td>{v.date}</td>
+                    <td style={{ fontVariantNumeric: 'tabular-nums' }}>
+                      {v.systolic || v.diastolic ? `${v.systolic || '-'}/${v.diastolic || '-'} mmHg` : '—'}
+                    </td>
+                    <td style={{ fontVariantNumeric: 'tabular-nums' }}>
+                      {v.spo2 !== undefined ? (
+                        <span
+                          className="clinical-badge"
+                          data-level={v.spo2 < 92 ? 'high' : v.spo2 <= 94 ? 'warn' : 'ok'}
+                        >
+                          {v.spo2}%
+                        </span>
+                      ) : (
+                        '—'
+                      )}
+                    </td>
+                    <td style={{ fontVariantNumeric: 'tabular-nums' }}>
+                      {v.tempF !== undefined ? `${v.tempF}°F` : '—'}
+                    </td>
+                    <td style={{ fontVariantNumeric: 'tabular-nums' }}>
+                      {v.bloodSugar !== undefined ? `${v.bloodSugar} mmol/L` : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </section>
+        )}
+
+        {/* Physician Notes & Clinical Disclaimer */}
+        <section className="clinical-report-section">
+          <h3 className="clinical-section-title">
+            Physician Assessment &amp; Notes · চিকিৎসকের মন্তব্য ও করণীয়
+          </h3>
+          <div className="clinical-physician-notes">
+            Clinical Impression / Investigations Ordered / Medication Changes:
+          </div>
+        </section>
+
+        <footer className="clinical-report-footer">
+          <span>
+            Disclaimer: Patient/caregiver-reported pre-consultation summary generated by Dr. Tota
+            Companion. Decision-support only; not a standalone medical diagnosis.
+          </span>
+          <span>Ref: {reportRefId}</span>
+        </footer>
+      </article>
+    );
+  };
+
   return (
     <section className="tab-panel" id="panel-tracker" aria-labelledby="tab-btn-tracker">
       {/* 4 KPI Status Cards */}
@@ -666,6 +1071,50 @@ const CoughTracker: React.FC<CoughTrackerProps> = ({ state, onUpdateState, onEme
             {totalFlags} টি ফ্ল্যাগ · এসিই-ইনহিবিটর নজরদারি
           </div>
         </div>
+      </div>
+
+      {/* Physician-Ready Printable PDF Clinical Summary Action Strip */}
+      <div className="card no-print" id="clinical-pdf-export-card">
+        <div className="brand-title-row" style={{ justifyContent: 'space-between', gap: 'var(--space-md)' }}>
+          <div style={{ flex: 1, minWidth: '240px' }}>
+            <div className="flex items-center gap-2">
+              <FileText size={20} className="text-[#0b7a88]" aria-hidden="true" />
+              <h2 className="subhead" style={{ margin: 0 }}>
+                চিকিৎসকের জন্য প্রিন্টেবল PDF স্বাস্থ্য সারসংক্ষেপ
+              </h2>
+            </div>
+            <p className="lede" style={{ marginTop: '0.25rem', fontSize: 'var(--label-size)' }}>
+              কাশির ইতিহাস, ৬-ডোমেইন স্ক্রিনিং, ভাইটালস ও ওষুধের (ACE-I) ঝুঁকি ডাক্তারের পড়ার উপযোগী পরিচ্ছন্ন রিপোর্ট আকারে প্রিন্ট বা PDF সেভ করুন।
+            </p>
+          </div>
+          <div className="header-actions">
+            <motion.button
+              type="button"
+              whileTap={{ scale: 0.97 }}
+              className="btn btn-outline btn-sm"
+              id="btn-preview-clinical-pdf"
+              onClick={() => generatePrintablePdfSummary('preview')}
+            >
+              <FileText size={16} aria-hidden="true" />
+              <span>রিপোর্ট প্রিভিউ দেখুন</span>
+            </motion.button>
+            <motion.button
+              type="button"
+              whileTap={{ scale: 0.97 }}
+              className="btn btn-primary btn-sm"
+              id="btn-generate-clinical-pdf"
+              onClick={() => generatePrintablePdfSummary('print')}
+            >
+              <Printer size={16} aria-hidden="true" />
+              <span>প্রিন্ট / PDF সারসংক্ষেপ</span>
+            </motion.button>
+          </div>
+        </div>
+        {pdfFeedback && (
+          <div className="inline-feedback" style={{ marginTop: 'var(--space-xs)' }}>
+            {pdfFeedback}
+          </div>
+        )}
       </div>
 
       {/* Dynamic Bangladesh NTP TB >= 2 Week Banner */}
@@ -1468,6 +1917,84 @@ const CoughTracker: React.FC<CoughTrackerProps> = ({ state, onUpdateState, onEme
           </div>
         </div>
       </div>
+
+      {/* Interactive Physician Report Preview Modal */}
+      <AnimatePresence>
+        {showPdfPreview && (
+          <motion.div
+            className="modal-backdrop no-print"
+            id="clinical-pdf-preview-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="clinical-pdf-preview-title"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.16 }}
+            onClick={(ev) => {
+              if (ev.target === ev.currentTarget) setShowPdfPreview(false);
+            }}
+          >
+            <motion.div
+              className="modal-dialog clinical-preview-dialog"
+              initial={{ opacity: 0, scale: 0.96, y: 12 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.97, y: 6 }}
+              transition={{ type: 'spring', stiffness: 360, damping: 30 }}
+            >
+              <div
+                className="brand-title-row"
+                style={{ justifyContent: 'space-between', alignItems: 'center' }}
+              >
+                <div>
+                  <h2
+                    className="subhead"
+                    id="clinical-pdf-preview-title"
+                    style={{ margin: 0 }}
+                  >
+                    চিকিৎসকের প্রিন্টেবল PDF রিপোর্ট প্রিভিউ
+                  </h2>
+                  <span className="kpi-caption" style={{ margin: 0 }}>
+                    প্রিন্ট ডায়ালগ থেকে &quot;Save as PDF&quot; বেছে নিলে পরিচ্ছন্ন A4 কপি সংরক্ষিত হবে।
+                  </span>
+                </div>
+                <div className="header-actions">
+                  <motion.button
+                    type="button"
+                    whileTap={{ scale: 0.97 }}
+                    className="btn btn-primary btn-sm"
+                    onClick={() => generatePrintablePdfSummary('print')}
+                  >
+                    <Printer size={16} aria-hidden="true" />
+                    <span>প্রিন্ট / PDF সংরক্ষণ</span>
+                  </motion.button>
+                  <motion.button
+                    type="button"
+                    whileTap={{ scale: 0.97 }}
+                    className="btn btn-outline btn-sm"
+                    onClick={() => setShowPdfPreview(false)}
+                    aria-label="প্রিভিউ বন্ধ করুন"
+                  >
+                    <X size={16} aria-hidden="true" />
+                    <span>বন্ধ করুন</span>
+                  </motion.button>
+                </div>
+              </div>
+
+              {renderClinicalSummarySheet()}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Dedicated A4 Print Portal mounted directly on document.body for clean single-report PDF output */}
+      {typeof document !== 'undefined' &&
+        createPortal(
+          <div id="clinical-pdf-print-root" className="clinical-print-portal">
+            {renderClinicalSummarySheet()}
+          </div>,
+          document.body
+        )}
     </section>
   );
 };
