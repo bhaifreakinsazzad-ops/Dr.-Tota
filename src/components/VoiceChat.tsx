@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Check, Circle, Loader2, Pill, Sparkles } from 'lucide-react';
+import { Check, Circle, Pill, Sparkles } from 'lucide-react';
+import { animate, stagger } from 'animejs';
 import { motion, AnimatePresence } from 'motion/react';
 import AgenticDoctorStage, { type AgentVisualState } from './AgenticDoctorStage';
 import { speakText, stopSpeaking, SpeechRecognizer, UniversalAudioRecorder } from '../utils/speech';
@@ -63,13 +64,18 @@ const VoiceChat: React.FC<VoiceChatProps> = ({
 
   const recognizerRef = useRef<SpeechRecognizer | null>(null);
   const audioRecorderRef = useRef<UniversalAudioRecorder | null>(null);
+  const audioLevelRef = useRef<number>(0);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const medProgressRef = useRef<HTMLDivElement>(null);
+  const aiChipsRef = useRef<HTMLDivElement>(null);
+  const thinkingBarsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     recognizerRef.current = new SpeechRecognizer();
     audioRecorderRef.current = new UniversalAudioRecorder();
     return () => {
       audioRecorderRef.current?.cleanup();
+      audioLevelRef.current = 0;
     };
   }, []);
 
@@ -86,7 +92,13 @@ const VoiceChat: React.FC<VoiceChatProps> = ({
         forceEmergency,
         {
           onStart: () => setIsSpeaking(true),
-          onEnd: () => setIsSpeaking(false),
+          onEnd: () => {
+            audioLevelRef.current = 0;
+            setIsSpeaking(false);
+          },
+          onAudioLevel: (lvl) => {
+            audioLevelRef.current = lvl;
+          },
         },
         state.settings.useAiVoice
       );
@@ -398,6 +410,7 @@ const VoiceChat: React.FC<VoiceChatProps> = ({
 
   const handleStartNewSession = () => {
     stopSpeaking();
+    audioLevelRef.current = 0;
     setIsSpeaking(false);
     setChatError('');
     onUpdateState((prev) => ({
@@ -408,6 +421,7 @@ const VoiceChat: React.FC<VoiceChatProps> = ({
 
   const handleStopSpeaking = () => {
     stopSpeaking();
+    audioLevelRef.current = 0;
     setIsSpeaking(false);
   };
 
@@ -415,6 +429,57 @@ const VoiceChat: React.FC<VoiceChatProps> = ({
   const aiSuggestedChips = lastBotMsg?.suggestedChips || [];
   const activeRecording = isRecording || isAiAudioRecording;
   const hasAceRisk = state.medications.some((m) => m.coughRisk === 'HIGH');
+
+  // Anime.js Prayer-Time Medication Adherence Bar Animation
+  useEffect(() => {
+    if (!medProgressRef.current || state.medications.length === 0) return;
+    const pct = Math.round((todayTakenIds.length / state.medications.length) * 100);
+    const anim = animate(medProgressRef.current, {
+      width: `${pct}%`,
+      duration: 560,
+      ease: 'outExpo',
+    });
+    return () => {
+      anim.revert();
+    };
+  }, [todayTakenIds.length, state.medications.length]);
+
+  // Anime.js Staggered AI Quick-Reply Chips Entrance
+  useEffect(() => {
+    if (!aiChipsRef.current || aiSuggestedChips.length === 0) return;
+    const chips = aiChipsRef.current.querySelectorAll('.symptom-chip');
+    if (chips.length === 0) return;
+    const anim = animate(chips, {
+      translateY: [10, 0],
+      opacity: [0, 1],
+      scale: [0.93, 1],
+      duration: 380,
+      delay: stagger(55),
+      ease: 'outBack(1.4)',
+    });
+    return () => {
+      anim.revert();
+    };
+  }, [aiSuggestedChips]);
+
+  // Anime.js 6-Domain Diagnostic Thinking Equalizer
+  useEffect(() => {
+    if (!isThinking || !thinkingBarsRef.current) return;
+    const bars = thinkingBarsRef.current.querySelectorAll('.think-eq-bar');
+    if (bars.length === 0) return;
+    const anim = animate(bars, {
+      scaleY: [0.35, 1.0],
+      opacity: [0.45, 1.0],
+      duration: 360,
+      delay: stagger(65, { from: 'center' }),
+      loop: true,
+      alternate: true,
+      ease: 'inOutSine',
+    });
+    return () => {
+      anim.revert();
+    };
+  }, [isThinking]);
 
   const agentState: AgentVisualState = useMemo(() => {
     if (lastBotMsg?.tier === 'T0' && !activeRecording && !isThinking) return 'emergency';
@@ -446,6 +511,7 @@ const VoiceChat: React.FC<VoiceChatProps> = ({
             isTranscribing={isTranscribing}
             isAiAudioRecording={isAiAudioRecording}
             isSpeaking={isSpeaking}
+            audioLevelRef={audioLevelRef}
             activeDomains={activeDomains}
             onToggleVoice={handleToggleVoiceRecording}
             onToggleAiAudio={() => void handleToggleAiAudioRecording()}
@@ -477,6 +543,27 @@ const VoiceChat: React.FC<VoiceChatProps> = ({
                 >
                   {todayTakenIds.length}/{state.medications.length} সম্পন্ন
                 </span>
+              </div>
+              <div
+                style={{
+                  width: '100%',
+                  height: '6px',
+                  borderRadius: '999px',
+                  background: 'var(--surface-container)',
+                  overflow: 'hidden',
+                  marginTop: '0.35rem',
+                }}
+                aria-hidden="true"
+              >
+                <div
+                  ref={medProgressRef}
+                  style={{
+                    width: '0%',
+                    height: '100%',
+                    borderRadius: '999px',
+                    background: 'linear-gradient(90deg, #0b7a88, #237a4b)',
+                  }}
+                />
               </div>
               <div
                 className={`list-stack ${state.settings.purdahMode ? 'privacy-blur' : ''}`}
@@ -543,14 +630,11 @@ const VoiceChat: React.FC<VoiceChatProps> = ({
                   <div className="kpi-caption" style={{ marginBottom: 'var(--space-xs)', marginTop: 0 }}>
                     প্রশ্নের সহজ উত্তর দিন:
                   </div>
-                  <div className="chips-grid">
-                    {aiSuggestedChips.map((phrase, idx) => (
+                  <div className="chips-grid" ref={aiChipsRef}>
+                    {aiSuggestedChips.map((phrase) => (
                       <motion.button
                         key={phrase}
                         type="button"
-                        initial={{ opacity: 0, scale: 0.94 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        transition={{ delay: idx * 0.04 }}
                         whileTap={{ scale: 0.96 }}
                         className="symptom-chip ai-suggested"
                         disabled={isThinking}
@@ -720,12 +804,34 @@ const VoiceChat: React.FC<VoiceChatProps> = ({
                 animate={{ opacity: 1, y: 0 }}
               >
                 <div className="msg-meta">
-                  <span>ডাঃ তোতা</span>
+                  <span>ডাঃ তোতা · ৬-ডোমেইন বিশ্লেষণ</span>
                 </div>
-                <p className="msg-body flex items-center gap-2" style={{ color: 'var(--on-surface-variant)' }}>
-                  <Loader2 size={18} className="animate-spin" aria-hidden="true" />
-                  আপনার কথা মন দিয়ে বুঝে উত্তর তৈরি করছি…
-                </p>
+                <div className="flex items-center gap-3">
+                  <div
+                    ref={thinkingBarsRef}
+                    className="flex items-center gap-1 shrink-0"
+                    style={{ height: '20px' }}
+                    aria-hidden="true"
+                  >
+                    {[0, 1, 2, 3, 4, 5].map((barIdx) => (
+                      <span
+                        key={barIdx}
+                        className="think-eq-bar"
+                        style={{
+                          width: '4px',
+                          height: '18px',
+                          borderRadius: '999px',
+                          background: '#0b7a88',
+                          display: 'inline-block',
+                          transformOrigin: 'center',
+                        }}
+                      />
+                    ))}
+                  </div>
+                  <p className="msg-body" style={{ color: 'var(--on-surface-variant)', margin: 0 }}>
+                    আপনার কথা মন দিয়ে বুঝে উত্তর তৈরি করছি…
+                  </p>
+                </div>
               </motion.div>
             )}
 

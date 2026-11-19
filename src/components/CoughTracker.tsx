@@ -103,7 +103,7 @@ const CoughTracker: React.FC<CoughTrackerProps> = ({ state, onUpdateState, onEme
     setCoughWeeks(Number(state.profile.coughWeeks) || 0);
   }, [state.profile.coughWeeks]);
 
-  // Anime.js v4 staggered KPI entrance
+  // Anime.js v4 staggered KPI entrance + numeric roll-up
   useEffect(() => {
     const grid = kpiGridRef.current;
     if (!grid) return;
@@ -116,10 +116,30 @@ const CoughTracker: React.FC<CoughTrackerProps> = ({ state, onUpdateState, onEme
       delay: stagger(55),
       ease: 'outCubic',
     });
+
+    const weeksEl = document.getElementById('stat-duration');
+    const targetWeeks = Number(state.profile.coughWeeks) || 0;
+    const counterProxy = { val: 0 };
+    const numAnim =
+      weeksEl && targetWeeks > 0
+        ? animate(counterProxy, {
+            val: targetWeeks,
+            duration: 600,
+            ease: 'outExpo',
+            onUpdate: () => {
+              const rounded = Number.isInteger(targetWeeks)
+                ? Math.round(counterProxy.val)
+                : Number(counterProxy.val.toFixed(1));
+              weeksEl.textContent = `${rounded} সপ্তাহ`;
+            },
+          })
+        : null;
+
     return () => {
       anim.revert();
+      numAnim?.revert();
     };
-  }, []);
+  }, [state.profile.coughWeeks]);
 
   // Anime.js v4 prescription scanning optical laser sweep
   useEffect(() => {

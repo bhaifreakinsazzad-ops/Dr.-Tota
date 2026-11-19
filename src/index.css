@@ -506,6 +506,28 @@ button, input, select, textarea {
   background: radial-gradient(circle at 50% 45%, #0e3240 0%, #051117 78%);
   overflow: hidden;
   user-select: none;
+  transform-origin: center center;
+  will-change: transform;
+}
+
+.speaking-aura-ring {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 210px;
+  height: 210px;
+  margin-left: -105px;
+  margin-top: -105px;
+  border-radius: 9999px;
+  pointer-events: none;
+  opacity: 0;
+  transform: scale(0.9);
+  transform-origin: center center;
+  will-change: transform, opacity;
+  border: 1.5px solid rgb(34 211 238 / 0.55);
+  box-shadow:
+    0 0 28px rgb(34 211 238 / 0.28),
+    inset 0 0 24px rgb(34 211 238 / 0.16);
 }
 
 .agent-viewport canvas {

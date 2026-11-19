@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
-import { animate, stagger } from 'animejs';
+import { animate, createTimeline, stagger, svg } from 'animejs';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Mic,
@@ -37,6 +37,7 @@ interface AgenticDoctorStageProps {
   isTranscribing: boolean;
   isAiAudioRecording: boolean;
   isSpeaking: boolean;
+  audioLevelRef?: React.MutableRefObject<number>;
   activeDomains: string[];
   onToggleVoice: () => void;
   onToggleAiAudio: () => void;
@@ -95,56 +96,80 @@ const STATE_CONFIG: Record<
     labelBn: string;
     coreHex: number;
     ringHex: number;
+    accentCss: string;
     breathScale: number;
     ringSpeed: number;
     glowIntensity: number;
     waveSpeed: number;
+    cameraZ: number;
+    particleSpread: number;
+    gimbalSpread: number;
   }
 > = {
   idle: {
     labelBn: 'প্রস্তুত · শান্ত পর্যবেক্ষণ',
     coreHex: 0x16b9cc,
     ringHex: 0x4de8f4,
+    accentCss: '#38e2f4',
     breathScale: 1.0,
     ringSpeed: 0.45,
     glowIntensity: 0.9,
     waveSpeed: 1.0,
+    cameraZ: 5.25,
+    particleSpread: 1.0,
+    gimbalSpread: 1.0,
   },
   listening: {
     labelBn: 'শুনছি · ৬৫০ মি.সে. কাশি বাফার চালু',
     coreHex: 0x10d998,
     ringHex: 0x6ef7c8,
-    breathScale: 1.12,
-    ringSpeed: 1.35,
-    glowIntensity: 1.55,
-    waveSpeed: 2.3,
+    accentCss: '#34d399',
+    breathScale: 1.13,
+    ringSpeed: 1.45,
+    glowIntensity: 1.65,
+    waveSpeed: 2.35,
+    cameraZ: 4.78,
+    particleSpread: 1.18,
+    gimbalSpread: 1.08,
   },
   thinking: {
-    labelBn: 'বিশ্লেষণ করছি · ৬-ডোমেইন যাচাই',
+    labelBn: 'বিশ্লেষণ করছি · ৬-ডোমেইন স্ক্যান',
     coreHex: 0x5c7cfa,
     ringHex: 0x91a7ff,
+    accentCss: '#818cf8',
     breathScale: 0.94,
-    ringSpeed: 2.1,
-    glowIntensity: 1.45,
-    waveSpeed: 2.8,
+    ringSpeed: 2.35,
+    glowIntensity: 1.55,
+    waveSpeed: 2.85,
+    cameraZ: 4.9,
+    particleSpread: 0.88,
+    gimbalSpread: 1.14,
   },
   speaking: {
     labelBn: 'পরামর্শ দিচ্ছি · বাংলায় শুনুন',
     coreHex: 0x22d3ee,
     ringHex: 0xa5f3fc,
-    breathScale: 1.08,
-    ringSpeed: 1.05,
-    glowIntensity: 1.35,
-    waveSpeed: 1.9,
+    accentCss: '#22d3ee',
+    breathScale: 1.09,
+    ringSpeed: 1.1,
+    glowIntensity: 1.4,
+    waveSpeed: 1.95,
+    cameraZ: 4.95,
+    particleSpread: 1.08,
+    gimbalSpread: 1.04,
   },
   emergency: {
     labelBn: 'সতর্কতা · জরুরি রেড-ফ্ল্যাগ প্রটোকল',
     coreHex: 0xef4444,
     ringHex: 0xfca5a5,
-    breathScale: 1.16,
-    ringSpeed: 2.4,
-    glowIntensity: 1.9,
+    accentCss: '#f87171',
+    breathScale: 1.18,
+    ringSpeed: 2.55,
+    glowIntensity: 1.95,
     waveSpeed: 3.1,
+    cameraZ: 4.65,
+    particleSpread: 1.24,
+    gimbalSpread: 1.16,
   },
 };
 
@@ -173,6 +198,7 @@ const AgenticDoctorStage: React.FC<AgenticDoctorStageProps> = ({
   isTranscribing,
   isAiAudioRecording,
   isSpeaking,
+  audioLevelRef,
   activeDomains,
   onToggleVoice,
   onToggleAiAudio,
@@ -180,25 +206,45 @@ const AgenticDoctorStage: React.FC<AgenticDoctorStageProps> = ({
   onAskDomain,
 }) => {
   const mountRef = useRef<HTMLDivElement>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const speakingAuraRef = useRef<HTMLDivElement>(null);
+  const stateReadoutRef = useRef<HTMLDivElement>(null);
   const waveSvgRef = useRef<SVGSVGElement>(null);
+  const ecgPathRef = useRef<SVGPathElement>(null);
+  const ecgPulseDotRef = useRef<SVGCircleElement>(null);
+  const domainStripRef = useRef<HTMLDivElement>(null);
+  const stageShellRef = useRef<HTMLDivElement>(null);
+
   const [selectedDomainId, setSelectedDomainId] = useState<string | null>(null);
   const [hoveredDomainId, setHoveredDomainId] = useState<string | null>(null);
+  const [scanningDomainIdx, setScanningDomainIdx] = useState<number>(-1);
   const [webglFallback, setWebglFallback] = useState<boolean>(false);
 
-  // Proxy animated parameters driven by Anime.js v4 and read smoothly inside Three.js render loop
+  // Proxy animated parameters choreographed by Anime.js v4 timelines and sampled at 60fps in Three.js
   const animeProxyRef = useRef({
     breathScale: 1.0,
     ringSpeed: 0.45,
     glowIntensity: 0.9,
     waveSpeed: 1.0,
-    colorBlend: 0,
+    cameraZ: 5.25,
+    particleSpread: 1.0,
+    gimbalSpread: 1.0,
+    gimbalBurstTilt: 0,
+    speakingSizePulse: 0,
+    speakingOpacityPulse: 0,
   });
 
   const agentStateRef = useRef<AgentVisualState>(agentState);
   agentStateRef.current = agentState;
 
+  const isSpeakingRef = useRef<boolean>(isSpeaking);
+  isSpeakingRef.current = isSpeaking;
+
   const selectedDomainRef = useRef<string | null>(selectedDomainId);
   selectedDomainRef.current = selectedDomainId;
+
+  const scanningIdxRef = useRef<number>(scanningDomainIdx);
+  scanningIdxRef.current = scanningDomainIdx;
 
   const onToggleVoiceRef = useRef(onToggleVoice);
   onToggleVoiceRef.current = onToggleVoice;
@@ -227,49 +273,67 @@ const AgenticDoctorStage: React.FC<AgenticDoctorStageProps> = ({
   const flaggedRef = useRef<Record<string, boolean>>(domainFlagMap);
   flaggedRef.current = domainFlagMap;
 
-  // 1. Anime.js v4 Choreography: Smoothly morph 3D stage physics & SVG voice spectrogram on state changes
+  // 1. Anime.js v4 Multi-Stage Timeline Choreography for 3D Core + Spectrogram + ECG Drawable/MotionPath
   useEffect(() => {
     const cfg = STATE_CONFIG[agentState];
-    const anim = animate(animeProxyRef.current, {
-      breathScale: cfg.breathScale,
-      ringSpeed: cfg.ringSpeed,
-      glowIntensity: cfg.glowIntensity,
-      waveSpeed: cfg.waveSpeed,
-      duration: 680,
-      ease: 'outExpo',
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    // Choreographed 2-beat Anime.js timeline: kinetic impulse -> settled clinical rhythm
+    const tl = createTimeline({
+      defaults: { ease: 'outExpo' },
     });
 
-    const svgEl = waveSvgRef.current;
+    tl.add(animeProxyRef.current, {
+      ringSpeed: cfg.ringSpeed * (reducedMotion ? 1 : 1.75),
+      glowIntensity: cfg.glowIntensity * 1.25,
+      gimbalSpread: cfg.gimbalSpread * 1.07,
+      gimbalBurstTilt: agentState === 'idle' ? 0 : 0.24,
+      cameraZ: cfg.cameraZ,
+      duration: 320,
+    }).add(
+      animeProxyRef.current,
+      {
+        breathScale: cfg.breathScale,
+        ringSpeed: cfg.ringSpeed,
+        glowIntensity: cfg.glowIntensity,
+        waveSpeed: cfg.waveSpeed,
+        particleSpread: cfg.particleSpread,
+        gimbalSpread: cfg.gimbalSpread,
+        gimbalBurstTilt: 0,
+        duration: 620,
+        ease: 'outElastic(1, 0.72)',
+      },
+      '-=60'
+    );
+
+    // Spectrogram bars staggered harmonic bounce
     let waveAnim: ReturnType<typeof animate> | null = null;
-    if (svgEl) {
-      const bars = svgEl.querySelectorAll('.voice-bar');
-      const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-      if (!reducedMotion && bars.length > 0) {
-        const minScale = agentState === 'idle' ? 0.22 : 0.35;
+    if (waveSvgRef.current && !reducedMotion) {
+      const bars = waveSvgRef.current.querySelectorAll('.voice-bar');
+      if (bars.length > 0) {
+        const minScale = agentState === 'idle' ? 0.18 : 0.3;
         const maxScale =
-          agentState === 'listening'
+          agentState === 'listening' || agentState === 'emergency'
             ? 1.0
             : agentState === 'speaking'
-            ? 0.92
+            ? 0.94
             : agentState === 'thinking'
-            ? 0.78
-            : agentState === 'emergency'
-            ? 1.0
-            : 0.42;
+            ? 0.82
+            : 0.44;
         const dur =
           agentState === 'listening' || agentState === 'emergency'
-            ? 320
+            ? 270
             : agentState === 'thinking'
-            ? 380
+            ? 340
             : agentState === 'speaking'
-            ? 360
-            : 900;
+            ? 310
+            : 880;
 
         waveAnim = animate(bars, {
           scaleY: [minScale, maxScale],
-          opacity: agentState === 'idle' ? [0.45, 0.75] : [0.65, 1.0],
+          opacity: agentState === 'idle' ? [0.42, 0.78] : [0.68, 1.0],
           duration: dur,
-          delay: stagger(38, { from: 'center' }),
+          delay: stagger(34, { from: 'center' }),
           loop: true,
           alternate: true,
           ease: 'inOutSine',
@@ -277,13 +341,222 @@ const AgenticDoctorStage: React.FC<AgenticDoctorStageProps> = ({
       }
     }
 
+    // Live SVG ECG stroke draw + motionPath pulse tracer
+    let ecgDrawAnim: ReturnType<typeof animate> | null = null;
+    let ecgDotAnim: ReturnType<typeof animate> | null = null;
+    if (ecgPathRef.current && ecgPulseDotRef.current && !reducedMotion) {
+      const ecgDur =
+        agentState === 'emergency'
+          ? 900
+          : agentState === 'listening' || agentState === 'thinking'
+          ? 1250
+          : agentState === 'speaking'
+          ? 1450
+          : 2200;
+
+      const [drawable] = svg.createDrawable(ecgPathRef.current);
+      if (drawable) {
+        ecgDrawAnim = animate(drawable, {
+          draw: ['0 0', '0 1', '1 1'],
+          duration: ecgDur,
+          loop: true,
+          ease: 'inOutQuad',
+        });
+      }
+
+      const motionPath = svg.createMotionPath(ecgPathRef.current);
+      ecgDotAnim = animate(ecgPulseDotRef.current, {
+        ...motionPath,
+        duration: ecgDur,
+        loop: true,
+        ease: 'linear',
+      });
+    }
+
     return () => {
-      anim.revert();
+      tl.revert();
       waveAnim?.revert();
+      ecgDrawAnim?.revert();
+      ecgDotAnim?.revert();
     };
   }, [agentState]);
 
-  // 2. Three.js 3D Bio-Respiratory Neural Core + 6-Domain Orbital Array
+  // 2. Anime.js Live 6-Domain Sequential Diagnostic Sweep while Agent is Thinking
+  useEffect(() => {
+    if (agentState !== 'thinking') {
+      setScanningDomainIdx(-1);
+      return;
+    }
+
+    let step = 0;
+    setScanningDomainIdx(0);
+    const interval = setInterval(() => {
+      step = (step + 1) % DOMAIN_NODES.length;
+      setScanningDomainIdx(step);
+    }, 340);
+
+    return () => {
+      clearInterval(interval);
+      setScanningDomainIdx(-1);
+    };
+  }, [agentState]);
+
+  // Staggered Anime.js cascade on domain buttons when a domain is selected or thinking starts
+  useEffect(() => {
+    const strip = domainStripRef.current;
+    if (!strip) return;
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reducedMotion) return;
+
+    const btns = strip.querySelectorAll('.domain-node-btn');
+    if (btns.length === 0) return;
+
+    const anim = animate(btns, {
+      translateY: [6, 0],
+      opacity: [0.65, 1],
+      duration: 380,
+      delay: stagger(40),
+      ease: 'outCubic',
+    });
+
+    return () => {
+      anim.revert();
+    };
+  }, [agentState]);
+
+  // Anime.js border-glow pulse when a user clicks/selects a domain node
+  useEffect(() => {
+    if (!selectedDomainId || !stageShellRef.current) return;
+    const anim = animate(animeProxyRef.current, {
+      ringSpeed: STATE_CONFIG[agentStateRef.current].ringSpeed * 1.45,
+      glowIntensity: STATE_CONFIG[agentStateRef.current].glowIntensity * 1.22,
+      duration: 340,
+      alternate: true,
+      ease: 'outQuad',
+    });
+    return () => {
+      anim.revert();
+    };
+  }, [selectedDomainId]);
+
+  // 2b. Anime.js Ambient Breathing Animation on the Agent Viewport (.agent-viewport)
+  useEffect(() => {
+    const viewportEl = viewportRef.current;
+    if (!viewportEl) return;
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reducedMotion) return;
+
+    const breathProfile: Record<
+      AgentVisualState,
+      { scales: [number, number]; duration: number }
+    > = {
+      idle: { scales: [1.0, 1.015], duration: 3200 },
+      listening: { scales: [1.0, 1.021], duration: 2100 },
+      thinking: { scales: [0.994, 1.012], duration: 1850 },
+      speaking: { scales: [1.0, 1.022], duration: 1500 },
+      emergency: { scales: [1.0, 1.026], duration: 1150 },
+    };
+
+    const { scales, duration } = breathProfile[agentState];
+    const breathAnim = animate(viewportEl, {
+      scale: scales,
+      duration,
+      loop: true,
+      alternate: true,
+      ease: 'inOutSine',
+    });
+
+    return () => {
+      breathAnim.revert();
+    };
+  }, [agentState]);
+
+  // 2c. Anime.js Synchronized Rhythmic Speaking Pulse (Size + Opacity Oscillations)
+  useEffect(() => {
+    const activeSpeaking = isSpeaking || agentState === 'speaking';
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    if (!activeSpeaking || reducedMotion) {
+      const settleProxy = animate(animeProxyRef.current, {
+        speakingSizePulse: 0,
+        speakingOpacityPulse: 0,
+        duration: 260,
+        ease: 'outQuad',
+      });
+      const settleAura = speakingAuraRef.current
+        ? animate(speakingAuraRef.current, {
+            opacity: 0,
+            scale: 0.9,
+            duration: 240,
+            ease: 'outQuad',
+          })
+        : null;
+      return () => {
+        settleProxy.revert();
+        settleAura?.revert();
+      };
+    }
+
+    // Rhythmic multi-beat vocal cadence in Anime.js driving 3D size & opacity oscillations
+    const speakTimeline = createTimeline({
+      loop: true,
+      defaults: { ease: 'inOutSine' },
+    });
+
+    speakTimeline
+      .add(animeProxyRef.current, {
+        speakingSizePulse: 0.095,
+        speakingOpacityPulse: 0.34,
+        duration: 210,
+      })
+      .add(animeProxyRef.current, {
+        speakingSizePulse: 0.025,
+        speakingOpacityPulse: 0.12,
+        duration: 160,
+      })
+      .add(animeProxyRef.current, {
+        speakingSizePulse: 0.125,
+        speakingOpacityPulse: 0.42,
+        duration: 220,
+      })
+      .add(animeProxyRef.current, {
+        speakingSizePulse: 0.01,
+        speakingOpacityPulse: 0.06,
+        duration: 240,
+      });
+
+    // Synchronized concentric acoustic halo ring oscillation inside the viewport
+    const auraAnim = speakingAuraRef.current
+      ? animate(speakingAuraRef.current, {
+          opacity: [0.18, 0.84],
+          scale: [0.9, 1.13],
+          duration: 415,
+          loop: true,
+          alternate: true,
+          ease: 'inOutSine',
+        })
+      : null;
+
+    // Synchronized state readout rhythmic opacity & scale pulse
+    const readoutAnim = stateReadoutRef.current
+      ? animate(stateReadoutRef.current, {
+          opacity: [0.74, 1.0],
+          scale: [0.988, 1.025],
+          duration: 415,
+          loop: true,
+          alternate: true,
+          ease: 'inOutSine',
+        })
+      : null;
+
+    return () => {
+      speakTimeline.revert();
+      auraAnim?.revert();
+      readoutAnim?.revert();
+    };
+  }, [isSpeaking, agentState]);
+
+  // 3. Three.js 3D Bio-Respiratory Neural Core + 6-Domain Orbital Array
   useEffect(() => {
     const container = mountRef.current;
     if (!container) return;
@@ -420,10 +693,7 @@ const AgenticDoctorStage: React.FC<AgenticDoctorStageProps> = ({
       transparent: true,
       opacity: 0.34,
     });
-    const latticeShell = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(0.8, 1),
-      latticeMat
-    );
+    const latticeShell = new THREE.Mesh(new THREE.IcosahedronGeometry(0.8, 1), latticeMat);
     latticeShell.position.y = 0.05;
     rootGroup.add(latticeShell);
 
@@ -438,10 +708,7 @@ const AgenticDoctorStage: React.FC<AgenticDoctorStageProps> = ({
       opacity: 0.22,
       depthWrite: false,
     });
-    const bioCapsule = new THREE.Mesh(
-      new THREE.SphereGeometry(0.95, 36, 36),
-      capsuleMat
-    );
+    const bioCapsule = new THREE.Mesh(new THREE.SphereGeometry(0.95, 36, 36), capsuleMat);
     bioCapsule.position.y = 0.05;
     bioCapsule.userData = { action: 'toggleMic' };
     rootGroup.add(bioCapsule);
@@ -472,13 +739,14 @@ const AgenticDoctorStage: React.FC<AgenticDoctorStageProps> = ({
     gimbalRingB.rotation.x = -Math.PI / 5;
     rootGroup.add(gimbalRingB);
 
+    const harmonicWaveMat = new THREE.MeshBasicMaterial({
+      color: 0x52e5f5,
+      transparent: true,
+      opacity: 0.42,
+    });
     const harmonicWaveRing = new THREE.Mesh(
       new THREE.TorusGeometry(1.68, 0.014, 12, 108),
-      new THREE.MeshBasicMaterial({
-        color: 0x52e5f5,
-        transparent: true,
-        opacity: 0.42,
-      })
+      harmonicWaveMat
     );
     harmonicWaveRing.position.y = 0.05;
     harmonicWaveRing.rotation.x = Math.PI / 2.25;
@@ -551,7 +819,6 @@ const AgenticDoctorStage: React.FC<AgenticDoctorStageProps> = ({
     const raycaster = new THREE.Raycaster();
     const pointerNdc = new THREE.Vector2();
 
-    // Pointer interaction (orbit drag + hover/click raycast)
     let isDragging = false;
     let pointerDownPos = { x: 0, y: 0 };
     let targetYaw = 0;
@@ -624,7 +891,6 @@ const AgenticDoctorStage: React.FC<AgenticDoctorStageProps> = ({
     canvas.addEventListener('pointermove', handlePointerMove);
     canvas.addEventListener('pointerup', handlePointerUp);
 
-    // ResizeObserver
     const resize = () => {
       const w = container.clientWidth || 420;
       const h = container.clientHeight || 310;
@@ -636,7 +902,6 @@ const AgenticDoctorStage: React.FC<AgenticDoctorStageProps> = ({
     ro.observe(container);
     resize();
 
-    // Context loss safety
     let contextLost = false;
     const onContextLost = (ev: Event) => {
       ev.preventDefault();
@@ -648,7 +913,6 @@ const AgenticDoctorStage: React.FC<AgenticDoctorStageProps> = ({
     canvas.addEventListener('webglcontextlost', onContextLost);
     canvas.addEventListener('webglcontextrestored', onContextRestored);
 
-    // Animation loop (hardware vs software GL pacing)
     let disposed = false;
     let rafId = 0;
     let lastTime = performance.now();
@@ -659,7 +923,10 @@ const AgenticDoctorStage: React.FC<AgenticDoctorStageProps> = ({
       if (soft) {
         const gl = renderer.getContext();
         const sync = (gl as WebGL2RenderingContext).fenceSync
-          ? (gl as WebGL2RenderingContext).fenceSync((gl as WebGL2RenderingContext).SYNC_GPU_COMMANDS_COMPLETE, 0)
+          ? (gl as WebGL2RenderingContext).fenceSync(
+              (gl as WebGL2RenderingContext).SYNC_GPU_COMMANDS_COMPLETE,
+              0
+            )
           : null;
         if (sync) {
           gl.flush();
@@ -692,52 +959,79 @@ const AgenticDoctorStage: React.FC<AgenticDoctorStageProps> = ({
         const motionFactor = reducedMotion ? 0.15 : 1;
         elapsed += dt * motionFactor;
 
-        // Smooth color interpolation
+        const speakingActive = isSpeakingRef.current || agentStateRef.current === 'speaking';
+        const liveAudioBoost = speakingActive ? Math.min(1, audioLevelRef?.current || 0) : 0;
+        const speakingSizeMod = proxy.speakingSizePulse + liveAudioBoost * 0.1;
+        const speakingOpacityMod = proxy.speakingOpacityPulse + liveAudioBoost * 0.35;
+
+        // Anime.js driven dynamic camera focus & gimbal spread
+        camera.position.z = proxy.cameraZ;
+        gimbalRingA.scale.setScalar(proxy.gimbalSpread + speakingSizeMod * 0.28);
+        gimbalRingB.scale.setScalar(proxy.gimbalSpread + speakingSizeMod * 0.34);
+        harmonicWaveRing.scale.setScalar(proxy.gimbalSpread * 1.02 + speakingSizeMod * 0.55);
+
+        // Smooth color interpolation + rhythmic speaking opacity & emissive glow oscillations
         targetCoreColor.setHex(st.coreHex);
         targetRingColor.setHex(st.ringHex);
         coreMat.color.lerp(targetCoreColor, 0.08);
         coreMat.emissive.lerp(targetCoreColor, 0.08);
-        coreMat.emissiveIntensity = proxy.glowIntensity;
+        coreMat.emissiveIntensity = proxy.glowIntensity + speakingOpacityMod * 1.35;
+        latticeMat.opacity = Math.min(0.88, 0.34 + speakingOpacityMod * 0.85);
+        capsuleMat.opacity = Math.min(0.54, 0.22 + speakingOpacityMod * 0.45);
+        harmonicWaveMat.opacity = Math.min(0.95, 0.42 + speakingOpacityMod * 0.9);
+        particleMat.opacity = Math.min(1.0, 0.72 + speakingOpacityMod * 0.45);
         gimbalMatB.color.lerp(targetRingColor, 0.08);
         gimbalMatB.emissive.lerp(targetCoreColor, 0.08);
         baseGlowRing.material.color.lerp(targetRingColor, 0.08);
         baseGlowRing.material.emissive.lerp(targetCoreColor, 0.08);
         rimLight.color.lerp(targetCoreColor, 0.08);
+        rimLight.intensity = 3.2 + speakingOpacityMod * 2.4;
 
-        // Breathing pulmonary harmonic
-        const pulse = Math.sin(elapsed * 2.1 * proxy.waveSpeed) * 0.045;
-        const scale = proxy.breathScale + pulse;
+        // Breathing pulmonary harmonic + synchronized speaking size oscillations
+        const pulse = Math.sin(elapsed * 2.1 * proxy.waveSpeed) * 0.048;
+        const scale = proxy.breathScale + pulse + speakingSizeMod;
         innerCore.scale.setScalar(scale);
-        latticeShell.scale.setScalar(scale * 1.03);
-        bioCapsule.scale.setScalar(1 + pulse * 0.45);
+        latticeShell.scale.setScalar(scale * 1.04 + speakingSizeMod * 0.25);
+        bioCapsule.scale.setScalar(1 + pulse * 0.45 + speakingSizeMod * 0.65);
 
         innerCore.rotation.y += dt * 0.45 * proxy.ringSpeed * motionFactor;
         latticeShell.rotation.y -= dt * 0.3 * proxy.ringSpeed * motionFactor;
 
         gimbalRingA.rotation.z += dt * 0.55 * proxy.ringSpeed * motionFactor;
+        gimbalRingA.rotation.x = Math.PI / 3 + proxy.gimbalBurstTilt;
         gimbalRingB.rotation.z -= dt * 0.42 * proxy.ringSpeed * motionFactor;
         gimbalRingB.rotation.y += dt * 0.25 * proxy.ringSpeed * motionFactor;
         harmonicWaveRing.rotation.z += dt * 0.22 * proxy.ringSpeed * motionFactor;
 
-        // Orbit drag damping + gentle auto-drift
         if (!isDragging) {
-          targetYaw += dt * 0.12 * motionFactor;
+          targetYaw += dt * 0.14 * motionFactor;
         }
         currentYaw += (targetYaw - currentYaw) * 0.08;
         currentPitch += (targetPitch - currentPitch) * 0.08;
         rootGroup.rotation.y = currentYaw;
         rootGroup.rotation.x = currentPitch;
 
-        // 6-Domain Orbital Nodes update
+        // 6-Domain Orbital Nodes update (highlights active thinking scan node + flagged nodes)
         domainGroup.rotation.y = elapsed * 0.2 * proxy.ringSpeed;
         domainMeshes.forEach((mesh, idx) => {
           const domId = DOMAIN_NODES[idx].id;
           const isFlagged = flaggedRef.current[domId];
           const isSelected = selectedDomainRef.current === domId;
-          const nodeScale = isSelected ? 1.48 : isFlagged ? 1.24 : 1.0;
+          const isScanningNode = scanningIdxRef.current === idx;
+          const nodeScale = isSelected
+            ? 1.5
+            : isScanningNode
+            ? 1.44
+            : isFlagged
+            ? 1.24
+            : 1.0;
           mesh.scale.setScalar(nodeScale);
           const mMat = mesh.material as THREE.MeshStandardMaterial;
-          if (isFlagged) {
+          if (isScanningNode) {
+            mMat.color.setHex(0xffffff);
+            mMat.emissive.setHex(0x818cf8);
+            mMat.emissiveIntensity = 1.85;
+          } else if (isFlagged) {
             mMat.color.setHex(0xf59e0b);
             mMat.emissive.setHex(0xd97706);
             mMat.emissiveIntensity = 1.45;
@@ -755,19 +1049,20 @@ const AgenticDoctorStage: React.FC<AgenticDoctorStageProps> = ({
           if (halo) {
             halo.scale.setScalar(nodeScale + Math.sin(elapsed * 3 + idx) * 0.08);
             (halo.material as THREE.MeshBasicMaterial).color.setHex(
-              isFlagged ? 0xfcd34d : 0x6ef0ff
+              isScanningNode ? 0xc7d2fe : isFlagged ? 0xfcd34d : 0x6ef0ff
             );
           }
         });
 
-        // Instanced particle drift
+        // Instanced particle drift with Anime.js particleSpread
         for (let i = 0; i < PARTICLE_COUNT; i++) {
           const p = particleData[i];
           const a = p.angle + elapsed * p.speed * proxy.ringSpeed;
+          const r = p.radius * proxy.particleSpread;
           dummyObj.position.set(
-            Math.cos(a) * p.radius,
+            Math.cos(a) * r,
             p.yOffset + Math.sin(elapsed * 1.4 + i) * 0.08,
-            Math.sin(a) * p.radius
+            Math.sin(a) * r
           );
           dummyObj.rotation.set(a, a * 0.7, 0);
           dummyObj.scale.setScalar(p.scale);
@@ -825,10 +1120,16 @@ const AgenticDoctorStage: React.FC<AgenticDoctorStageProps> = ({
   const activeRecording = agentState === 'listening';
 
   return (
-    <div className="agent-stage-shell">
+    <div className="agent-stage-shell" ref={stageShellRef}>
       {/* Top Clinical Telemetry Bar */}
       <div className="agent-stage-topbar">
-        <div className="agent-state-readout" role="status" aria-live="polite">
+        <div
+          ref={stateReadoutRef}
+          className="agent-state-readout"
+          role="status"
+          aria-live="polite"
+          style={{ transformOrigin: 'left center' }}
+        >
           <Sparkles size={17} aria-hidden="true" />
           <span>{stateMeta.labelBn}</span>
         </div>
@@ -849,7 +1150,7 @@ const AgenticDoctorStage: React.FC<AgenticDoctorStageProps> = ({
       )}
 
       {/* Interactive 3D Neural-Respiratory Canvas */}
-      <div className="agent-viewport">
+      <div className="agent-viewport" ref={viewportRef}>
         {webglFallback ? (
           <div className="h-full w-full flex flex-col items-center justify-center p-4 text-center">
             <Sparkles size={40} className="text-[#38e2f4] mb-2" aria-hidden="true" />
@@ -859,9 +1160,20 @@ const AgenticDoctorStage: React.FC<AgenticDoctorStageProps> = ({
           <div ref={mountRef} className="w-full h-full" />
         )}
 
+        <div
+          ref={speakingAuraRef}
+          className="speaking-aura-ring"
+          style={{ borderColor: stateMeta.accentCss }}
+          aria-hidden="true"
+        />
+
         <div className="viewport-hud-top">
           <span>ডাঃ তোতা নিউরাল কোর · ৩ডি</span>
-          <span>৬৫০ মি.সে. কাশি বাফার</span>
+          <span>
+            {agentState === 'thinking' && scanningDomainIdx >= 0
+              ? `স্ক্যান: ${DOMAIN_NODES[scanningDomainIdx].shortLabel}`
+              : '৬৫০ মি.সে. কাশি বাফার'}
+          </span>
         </div>
 
         <div className="viewport-hud-bottom">
@@ -891,28 +1203,56 @@ const AgenticDoctorStage: React.FC<AgenticDoctorStageProps> = ({
         </div>
       </div>
 
-      {/* Anime.js v4 Live Harmonic Voice & Respiratory Spectrogram */}
+      {/* Anime.js v4 Dual Telemetry: Live ECG MotionPath + 28-Bar Harmonic Spectrogram */}
       <div
         style={{
-          display: 'flex',
+          display: 'grid',
+          gridTemplateColumns: '1fr 1.25fr',
+          gap: '0.5rem',
           alignItems: 'center',
-          justifyContent: 'center',
-          height: '38px',
-          padding: '0 0.5rem',
+          height: '44px',
+          padding: '0 0.65rem',
           borderRadius: '0.65rem',
           background: '#06131a',
-          border: '1px solid rgba(56, 178, 196, 0.2)',
+          border: '1px solid rgba(56, 178, 196, 0.22)',
         }}
         aria-hidden="true"
       >
+        <svg viewBox="0 0 180 34" width="100%" height="32" preserveAspectRatio="none">
+          <path
+            d="M 2 18 L 36 18 L 46 18 L 54 6 L 62 29 L 70 11 L 78 18 L 112 18 L 120 18 L 128 7 L 136 28 L 144 12 L 152 18 L 178 18"
+            fill="none"
+            stroke="rgba(56, 226, 244, 0.16)"
+            strokeWidth="1.5"
+          />
+          <path
+            ref={ecgPathRef}
+            d="M 2 18 L 36 18 L 46 18 L 54 6 L 62 29 L 70 11 L 78 18 L 112 18 L 120 18 L 128 7 L 136 28 L 144 12 L 152 18 L 178 18"
+            fill="none"
+            stroke={stateMeta.accentCss}
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <circle
+            ref={ecgPulseDotRef}
+            cx="0"
+            cy="0"
+            r="3.2"
+            fill="#ffffff"
+            stroke={stateMeta.accentCss}
+            strokeWidth="1.5"
+          />
+        </svg>
+
         <svg
           ref={waveSvgRef}
-          viewBox="0 0 280 32"
+          viewBox="0 0 240 32"
           width="100%"
           height="28"
           preserveAspectRatio="none"
         >
-          {Array.from({ length: 28 }).map((_, i) => (
+          {Array.from({ length: 24 }).map((_, i) => (
             <rect
               key={i}
               className="voice-bar"
@@ -921,25 +1261,24 @@ const AgenticDoctorStage: React.FC<AgenticDoctorStageProps> = ({
               width={5}
               height={24}
               rx={2.5}
-              fill={
-                agentState === 'emergency'
-                  ? '#f87171'
-                  : agentState === 'listening'
-                  ? '#34d399'
-                  : agentState === 'thinking'
-                  ? '#818cf8'
-                  : '#38e2f4'
-              }
+              fill={stateMeta.accentCss}
               style={{ transformOrigin: 'center', transformBox: 'fill-box' }}
             />
           ))}
         </svg>
       </div>
 
-      {/* Interactive 6-Domain Orbital Selector Strip */}
-      <div className="domain-orbit-strip" aria-label="৬টি ক্লিনিক্যাল ডোমেইন নির্বাচন">
-        {enrichedDomains.map((dom) => {
-          const active = selectedDomainId === dom.id || hoveredDomainId === dom.id;
+      {/* Interactive 6-Domain Orbital Selector Strip (synced with Thinking Scan!) */}
+      <div
+        ref={domainStripRef}
+        className="domain-orbit-strip"
+        aria-label="৬টি ক্লিনিক্যাল ডোমেইন নির্বাচন"
+      >
+        {enrichedDomains.map((dom, idx) => {
+          const active =
+            selectedDomainId === dom.id ||
+            hoveredDomainId === dom.id ||
+            scanningDomainIdx === idx;
           return (
             <motion.button
               key={dom.id}
@@ -1043,7 +1382,11 @@ const AgenticDoctorStage: React.FC<AgenticDoctorStageProps> = ({
           whileTap={{ scale: 0.97 }}
           className={`btn btn-sm ${isAiAudioRecording ? 'btn-emergency' : 'btn-stage-ghost'}`}
           onClick={onToggleAiAudio}
-          disabled={agentState === 'listening' && !isAiAudioRecording ? true : isTranscribing || agentState === 'thinking'}
+          disabled={
+            agentState === 'listening' && !isAiAudioRecording
+              ? true
+              : isTranscribing || agentState === 'thinking'
+          }
           title="সিলেটি, চট্টগ্রামী বা যেকোনো ব্রাউজারে স্পষ্ট কথা বোঝার জন্য"
         >
           <AudioLines size={17} aria-hidden="true" />

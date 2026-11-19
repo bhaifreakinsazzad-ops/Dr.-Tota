@@ -4,10 +4,84 @@
 export interface SpeakCallbacks {
   onStart?: () => void;
   onEnd?: () => void;
+  onAudioLevel?: (level: number) => void;
 }
 
 let activeAudio: HTMLAudioElement | null = null;
 let activeSpeakRequestId = 0;
+let sharedAudioCtx: AudioContext | null = null;
+let activeMeterCancel: (() => void) | null = null;
+
+function stopAudioLevelMeter(): void {
+  if (activeMeterCancel) {
+    activeMeterCancel();
+    activeMeterCancel = null;
+  }
+}
+
+function attachAudioLevelMeter(
+  audio: HTMLAudioElement,
+  onAudioLevel?: (level: number) => void
+): void {
+  stopAudioLevelMeter();
+  if (!onAudioLevel || typeof window === 'undefined') return;
+
+  const AudioCtx =
+    window.AudioContext ||
+    (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!AudioCtx) return;
+
+  try {
+    if (!sharedAudioCtx || sharedAudioCtx.state === 'closed') {
+      sharedAudioCtx = new AudioCtx();
+    }
+    if (sharedAudioCtx.state === 'suspended') {
+      void sharedAudioCtx.resume();
+    }
+
+    const source = sharedAudioCtx.createMediaElementSource(audio);
+    const analyser = sharedAudioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.72;
+
+    source.connect(analyser);
+    analyser.connect(sharedAudioCtx.destination);
+
+    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+    let rafId = 0;
+    let stopped = false;
+
+    const sample = () => {
+      if (stopped) return;
+      analyser.getByteTimeDomainData(dataArray);
+      let sumSquares = 0;
+      for (let i = 0; i < dataArray.length; i++) {
+        const norm = (dataArray[i] - 128) / 128;
+        sumSquares += norm * norm;
+      }
+      const rms = Math.sqrt(sumSquares / dataArray.length);
+      const normalized = Math.min(1, rms * 3.8);
+      onAudioLevel(normalized);
+      rafId = requestAnimationFrame(sample);
+    };
+
+    rafId = requestAnimationFrame(sample);
+
+    activeMeterCancel = () => {
+      stopped = true;
+      cancelAnimationFrame(rafId);
+      try {
+        source.disconnect();
+        analyser.disconnect();
+      } catch {
+        // ignore disconnect errors
+      }
+      onAudioLevel(0);
+    };
+  } catch {
+    // Graceful fallback: audio still plays even if Web Audio capture is restricted
+  }
+}
 
 function speakWithBrowserSynthesis(
   text: string,
@@ -79,12 +153,15 @@ export async function speakText(
           const audio = new Audio(`data:${data.mimeType || 'audio/wav'};base64,${data.audioBase64}`);
           audio.playbackRate = forceEmergency ? 0.95 : Math.max(0.75, Math.min(1.2, rate || 0.88));
           activeAudio = audio;
+          attachAudioLevelMeter(audio, callbacks?.onAudioLevel);
           audio.onended = () => {
             if (activeAudio === audio) activeAudio = null;
+            stopAudioLevelMeter();
             callbacks?.onEnd?.();
           };
           audio.onerror = () => {
             if (activeAudio === audio) activeAudio = null;
+            stopAudioLevelMeter();
             speakWithBrowserSynthesis(text, rate, forceEmergency, callbacks);
           };
           await audio.play();
@@ -93,6 +170,7 @@ export async function speakText(
       }
     } catch {
       if (requestId !== activeSpeakRequestId) return;
+      stopAudioLevelMeter();
       // Fall through cleanly to browser Web Speech synthesis
     }
   }
@@ -103,6 +181,7 @@ export async function speakText(
 
 export function stopSpeaking(): void {
   activeSpeakRequestId++;
+  stopAudioLevelMeter();
   if (activeAudio) {
     try {
       activeAudio.pause();

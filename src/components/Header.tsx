@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Shield, Phone, WifiOff, Stethoscope } from 'lucide-react';
+import { animate, svg } from 'animejs';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface HeaderProps {
@@ -20,6 +21,8 @@ const Header: React.FC<HeaderProps> = ({
   const [isOnline, setIsOnline] = useState<boolean>(() =>
     typeof navigator !== 'undefined' ? navigator.onLine : true
   );
+  const badgeRef = useRef<HTMLDivElement>(null);
+  const syncTextRef = useRef<HTMLSpanElement>(null);
 
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
@@ -34,6 +37,37 @@ const Header: React.FC<HeaderProps> = ({
     };
   }, []);
 
+  // Anime.js SVG stethoscope stroke draw on mount
+  useEffect(() => {
+    const badge = badgeRef.current;
+    if (!badge) return;
+    const paths = badge.querySelectorAll('path, circle');
+    if (paths.length === 0) return;
+    const drawables = svg.createDrawable(paths);
+    const anim = animate(drawables, {
+      draw: ['0 0', '0 1'],
+      duration: 850,
+      ease: 'outCubic',
+    });
+    return () => {
+      anim.revert();
+    };
+  }, []);
+
+  // Subtle Anime.js feedback highlight when state saves
+  useEffect(() => {
+    if (!syncTextRef.current) return;
+    const anim = animate(syncTextRef.current, {
+      opacity: [0.45, 1],
+      translateY: [-2, 0],
+      duration: 280,
+      ease: 'outCubic',
+    });
+    return () => {
+      anim.revert();
+    };
+  }, [syncStatus]);
+
   return (
     <motion.header
       className="app-header"
@@ -44,7 +78,7 @@ const Header: React.FC<HeaderProps> = ({
       <div className="app-header-main">
         {/* Zone 1: Brand Crest & Clean Clinical Metadata */}
         <div className="flex items-center gap-3.5">
-          <div className="brand-mark-badge" aria-hidden="true">
+          <div className="brand-mark-badge" ref={badgeRef} aria-hidden="true">
             <Stethoscope size={24} strokeWidth={2.2} />
           </div>
           <div className="flex flex-col gap-0.5">
@@ -57,7 +91,7 @@ const Header: React.FC<HeaderProps> = ({
             <div className="meta-line">
               <span>এআই স্বাস্থ্য সহায়ক (আসল ডাক্তার নন)</span>
               <span className="meta-sep" aria-hidden="true">·</span>
-              <span id="sync-status-pill" role="status" aria-live="polite">
+              <span ref={syncTextRef} id="sync-status-pill" role="status" aria-live="polite">
                 {isOnline ? syncStatus : 'অফলাইন সেশন'}
               </span>
             </div>
