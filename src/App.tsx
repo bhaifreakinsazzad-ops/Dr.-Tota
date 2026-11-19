@@ -50,39 +50,41 @@ const App: React.FC = () => {
       className={`min-h-screen flex flex-col ${highContrast ? 'bg-black text-white' : 'bg-gray-50 text-gray-900'}`}
       style={{ fontSize: `${fontSize}rem` }}
     >
-      <Header
-        purdahMode={purdahMode}
-        onTogglePurdah={() => {
-          const settings = getSettings();
-          settings.purdahMode = !settings.purdahMode;
-          saveSettings(settings);
-          setPurdahMode(!purdahMode);
-        }}
-        onEmergency={() => {
-          setEmergencyScript('শুনুন, এটা খুব জরুরি। এখনই ৯৯৯ নম্বরে কল করুন অথবা পাশের কাউকে ডাকুন।');
-          setEmergencyOpen(true);
-        }}
-      />
+      <div className="sticky top-0 z-40">
+        <Header
+          purdahMode={purdahMode}
+          onTogglePurdah={() => {
+            const settings = getSettings();
+            settings.purdahMode = !settings.purdahMode;
+            saveSettings(settings);
+            setPurdahMode(!purdahMode);
+          }}
+          onEmergency={() => {
+            setEmergencyScript('শুনুন, এটা খুব জরুরি। এখনই ৯৯৯ নম্বরে কল করুন অথবা পাশের কাউকে ডাকুন।');
+            setEmergencyOpen(true);
+          }}
+        />
 
-      {/* Tab Navigation */}
-      <nav className={`sticky top-[72px] z-40 ${highContrast ? 'bg-gray-900 border-gray-700' : 'bg-white border-gray-200'} border-b shadow-sm`}>
-        <div className="max-w-4xl mx-auto flex">
-          {tabs.map(tab => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex-1 py-3 px-2 text-center text-xs font-medium transition-all border-b-2 ${
-                activeTab === tab.id
-                  ? 'border-emerald-500 text-emerald-700 bg-emerald-50'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'
-              }`}
-            >
-              <span className="block text-lg mb-0.5">{tab.emoji}</span>
-              <span className="leading-tight">{tab.label}</span>
-            </button>
-          ))}
-        </div>
-      </nav>
+        {/* Tab Navigation */}
+        <nav className={`${highContrast ? 'bg-gray-900 border-gray-700' : 'bg-white border-gray-200'} border-b shadow-sm`}>
+          <div className="max-w-4xl mx-auto flex">
+            {tabs.map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex-1 py-3 px-2 text-center text-xs font-medium transition-all border-b-2 ${
+                  activeTab === tab.id
+                    ? 'border-emerald-500 text-emerald-700 bg-emerald-50'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+                }`}
+              >
+                <span className="block text-lg mb-0.5">{tab.emoji}</span>
+                <span className="leading-tight">{tab.label}</span>
+              </button>
+            ))}
+          </div>
+        </nav>
+      </div>
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-4xl mx-auto w-full flex flex-col" style={{ minHeight: 'calc(100vh - 140px)' }}>

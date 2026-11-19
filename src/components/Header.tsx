@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 
 interface HeaderProps {
   purdahMode: boolean;
@@ -7,8 +7,25 @@ interface HeaderProps {
 }
 
 const Header: React.FC<HeaderProps> = ({ purdahMode, onTogglePurdah, onEmergency }) => {
+  const [isOnline, setIsOnline] = useState<boolean>(() =>
+    typeof navigator !== 'undefined' ? navigator.onLine : true
+  );
+
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
   return (
-    <header className="sticky top-0 z-50 bg-gradient-to-r from-emerald-700 to-teal-600 text-white shadow-lg">
+    <header className="relative z-50 bg-gradient-to-r from-emerald-700 to-teal-600 text-white shadow-lg">
       <div className="max-w-4xl mx-auto px-4 py-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -41,14 +58,42 @@ const Header: React.FC<HeaderProps> = ({ purdahMode, onTogglePurdah, onEmergency
           </div>
         </div>
         <div className="flex items-center gap-3 mt-1 text-xs text-emerald-100">
-          <span>☁️ ক্লাউড সংরক্ষিত</span>
+          <span>{isOnline ? '☁️ ক্লাউড সংরক্ষিত' : '💾 স্থানীয়ভাবে সংরক্ষিত'}</span>
           <span>•</span>
-          <span className="flex items-center gap-1">
-            <span className="w-2 h-2 bg-green-300 rounded-full inline-block"></span>
-            প্রস্তুত
+          <span
+            role="status"
+            aria-live="polite"
+            className="flex items-center gap-1.5 font-medium"
+          >
+            {isOnline ? (
+              <>
+                <span className="w-2 h-2 bg-green-300 rounded-full inline-block"></span>
+                <span>অনলাইন • প্রস্তুত</span>
+              </>
+            ) : (
+              <>
+                <span className="w-2 h-2 bg-amber-300 rounded-full inline-block animate-pulse"></span>
+                <span className="text-amber-200">অফলাইন</span>
+              </>
+            )}
           </span>
         </div>
       </div>
+
+      {!isOnline && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="bg-amber-400 text-amber-950 border-t border-amber-300 px-4 py-1.5"
+        >
+          <div className="max-w-4xl mx-auto flex items-center gap-2 text-xs font-semibold">
+            <span aria-hidden="true">📵</span>
+            <span>
+              আপনি এখন অফলাইনে আছেন — ইন্টারনেট না থাকায় ভয়েস সেবা (ভয়েস ইনপুট ও অডিও) সীমিত হতে পারে।
+            </span>
+          </div>
+        </div>
+      )}
     </header>
   );
 };
